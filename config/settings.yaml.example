@@ -1,0 +1,63 @@
+app:
+  name: "mul-agent"
+  version: "0.1.0"
+  debug: true
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+database:
+  url: "postgresql+asyncpg://mulagent:mulagent@localhost:5432/mulagent"
+  echo: false
+
+redis:
+  url: "redis://localhost:6379/0"
+
+qdrant:
+  url: "http://localhost:6333"
+  collection_name: "case_library"
+
+# 多模型配置：在models下定义多个模型，default指定默认使用哪个
+# API请求时可通过 model 参数选择，如 {"input": "...", "model": "deepseek"}
+llm:
+  default: "qwen"
+  models:
+    qwen:
+      name: "Qwen 3.5 Plus"
+      model: "qwen3.5-plus"
+      api_key: ""                                    # 填入你的 API Key
+      base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      max_tokens: 65536
+    # deepseek:
+    #   name: "DeepSeek V3"
+    #   model: "deepseek-chat"
+    #   api_key: ""
+    #   base_url: "https://api.deepseek.com/v1"
+    #   max_tokens: 8192
+    # openai:
+    #   name: "GPT-4o"
+    #   model: "gpt-4o"
+    #   api_key: ""
+    #   base_url: ""
+    #   temperature: 0.1
+    #   max_tokens: 4096
+    # ollama:
+    #   name: "Local Qwen"
+    #   model: "qwen2.5:14b"
+    #   api_key: ""
+    #   base_url: "http://localhost:11434/v1"
+    #   max_tokens: 4096
+
+openclaw:
+  enabled: false           # 启用 OpenClaw agent 运行时
+  timeout: 120             # 单个 agent 调用超时（秒）
+
+feishu:
+  app_id: ""               # 飞书应用 App ID
+  app_secret: ""           # 飞书应用 App Secret
+  autostart: false         # 是否开机自启（true 时 enable systemd 服务）
+
+security:
+  max_sandbox_timeout_seconds: 300
+  max_sandbox_memory_mb: 512

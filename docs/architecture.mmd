@@ -1,0 +1,178 @@
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#4A90D9', 'primaryTextColor': '#fff', 'primaryBorderColor': '#3a7bd5', 'lineColor': '#5D6D7E', 'secondaryColor': '#F39C12', 'tertiaryColor': '#2ECC71'}}}%%
+
+graph TB
+    subgraph UserInterface["<b>用户接口层 (Gateway)</b>"]
+        UI_API["FastAPI Gateway<br/>REST / WebSocket"]
+        UI_WEB["Web UI<br/>Streamlit / Gradio"]
+        UI_MSG["消息平台适配<br/>Telegram / Slack / WeChat"]
+    end
+
+    subgraph Dispatcher["<b>调度层 (Dispatcher Agent)</b>"]
+        INTENT["意图识别<br/>OpenClaw Agent"]
+        CLASSIFY["问题分类 & 定性<br/>高/中/低结构化"]
+        TEMPLATE_MATCH["模板匹配引擎<br/>案例库语义检索"]
+    end
+
+    subgraph Orchestrator["<b>编排层 (Orchestrator)</b>"]
+        DAG_ENGINE["任务分解引擎<br/>LangGraph DAG"]
+        AGENT_SELECT["Agent选派器<br/>多因素打分"]
+        EXEC_CTRL["执行控制器<br/>状态机 + 异常处理"]
+        QUALITY_GATE["质量门控<br/>检查Agent"]
+    end
+
+    subgraph AgentPool["<b>Agent池 (OpenClaw Agents)</b>"]
+        direction LR
+        AG_CODE["代码Agent<br/>Skills: code_gen,<br/>code_review, debug"]
+        AG_DATA["数据分析Agent<br/>Skills: pandas,<br/>viz, statistics"]
+        AG_RESEARCH["调研Agent<br/>Skills: web_search,<br/>summarize"]
+        AG_WRITE["写作Agent<br/>Skills: copywriting,<br/>translation"]
+        AG_REASON["推理Agent<br/>Skills: math,<br/>logic, planning"]
+        AG_CUSTOM["自定义Agent<br/>动态注册"]
+    end
+
+    subgraph SkillAcquire["<b>能力获取 (Skill Acquisition)</b>"]
+        ACQ_HISTORY["优先级1: 历史经验复用<br/>案例库匹配<br/>✅ 零风险"]
+        ACQ_SEARCH["优先级2: Web搜索<br/>获取知识/信息<br/>⚡ 低风险"]
+        ACQ_SKILL["优先级3: 外部Skill引入<br/>获取可执行能力<br/>⚠️ 高风险"]
+    end
+
+    subgraph Security["<b>Skill安全审查管线 (Security Pipeline)</b>"]
+        SEC_STATIC["Stage 1: 静态分析<br/>AST扫描 / semgrep<br/>签名库匹配"]
+        SEC_PERM["Stage 2: 权限评估<br/>最小权限校验<br/>同类基线对比"]
+        SEC_SANDBOX["Stage 3: 沙箱试运行<br/>隔离Docker执行<br/>行为监控"]
+        SEC_RATE["Stage 4: 信任评级<br/>trusted / sandboxed<br/>human_review / blocked"]
+        SEC_QUALITY["质量验证<br/>效果测试 + 基线对比"]
+        SEC_MONITOR["运行时监控<br/>异常行为检测<br/>信任度动态调整"]
+    end
+
+    subgraph SkillSource["<b>Skill来源</b>"]
+        SRC_OFFICIAL["官方内置<br/>免审查"]
+        SRC_COMMUNITY["认证社区源<br/>轻量审查"]
+        SRC_WILD["野生源<br/>完整审查"]
+    end
+
+    subgraph Memory["<b>记忆系统</b>"]
+        MEM_SHORT["会话记忆<br/>Redis"]
+        MEM_LONG["长期记忆<br/>OpenClaw Markdown<br/>+ Qdrant向量库"]
+        MEM_SHARED["共享知识库<br/>PostgreSQL"]
+    end
+
+    subgraph ToolLayer["<b>工具与资源层</b>"]
+        TOOL_EXEC["代码沙箱<br/>Docker"]
+        TOOL_SEARCH["搜索引擎<br/>SerpAPI / Tavily"]
+        TOOL_FILE["文件系统<br/>本地 + S3"]
+        TOOL_API["外部API<br/>HTTP Client"]
+        TOOL_DB["数据库<br/>PostgreSQL"]
+        TOOL_BROWSER["浏览器<br/>Playwright"]
+    end
+
+    subgraph Evolution["<b>进化层 (Evolution Engine)</b>"]
+        EVO_FEEDBACK["反馈收集器<br/>显式 + 隐式信号"]
+        EVO_TRACE["轨迹记录<br/>执行链路存储"]
+        EVO_EXTRACT["经验提取Agent<br/>模式抽象"]
+        EVO_CASE["案例库<br/>Qdrant + PostgreSQL"]
+        EVO_ANALYZE["技能缺口分析<br/>定期扫描"]
+        EVO_OPTIMIZE["策略优化器<br/>编排权重调整"]
+    end
+
+    subgraph Infra["<b>基础设施</b>"]
+        MQ["消息队列<br/>Redis Streams"]
+        MONITOR["监控<br/>Prometheus + Grafana"]
+        LOG["日志<br/>Structured Logging"]
+        CONFIG["配置中心<br/>openclaw.json + YAML"]
+    end
+
+    %% 主数据流
+    UI_API --> INTENT
+    UI_WEB --> UI_API
+    UI_MSG --> UI_API
+
+    INTENT --> CLASSIFY
+    CLASSIFY --> TEMPLATE_MATCH
+    TEMPLATE_MATCH --> DAG_ENGINE
+
+    DAG_ENGINE --> AGENT_SELECT
+    AGENT_SELECT --> EXEC_CTRL
+    EXEC_CTRL --> AgentPool
+    AgentPool --> QUALITY_GATE
+    QUALITY_GATE --> |"通过"| UI_API
+    QUALITY_GATE --> |"不通过"| EXEC_CTRL
+
+    %% Agent与工具/记忆的交互
+    AgentPool <--> Memory
+    AgentPool <--> ToolLayer
+
+    %% 能力获取流程（Agent发现能力缺口时触发）
+    AgentPool --> |"能力不足"| ACQ_HISTORY
+    ACQ_HISTORY --> |"无匹配"| ACQ_SEARCH
+    ACQ_SEARCH --> |"需要可执行能力"| ACQ_SKILL
+    ACQ_HISTORY --> |"有匹配"| AgentPool
+    ACQ_SEARCH --> |"知识足够"| AgentPool
+
+    %% Skill来源进入安全审查
+    ACQ_SKILL --> SkillSource
+    SRC_OFFICIAL --> |"直接可用"| AgentPool
+    SRC_COMMUNITY --> SEC_STATIC
+    SRC_WILD --> SEC_STATIC
+
+    %% 安全审查管线
+    SEC_STATIC --> SEC_PERM
+    SEC_PERM --> SEC_SANDBOX
+    SEC_SANDBOX --> SEC_RATE
+    SEC_RATE --> |"trusted/sandboxed"| SEC_QUALITY
+    SEC_RATE --> |"blocked"| SRC_WILD
+    SEC_QUALITY --> |"质量达标"| AgentPool
+    SEC_QUALITY --> |"质量不达标"| SRC_WILD
+
+    %% 运行时持续监控
+    AgentPool --> SEC_MONITOR
+    SEC_MONITOR --> |"异常→降级/移除"| SEC_RATE
+
+    %% 案例库为历史经验提供数据
+    EVO_CASE --> ACQ_HISTORY
+
+    %% 进化层数据流
+    UI_API --> |"用户反馈"| EVO_FEEDBACK
+    EXEC_CTRL --> |"执行轨迹"| EVO_TRACE
+    EVO_FEEDBACK --> EVO_EXTRACT
+    EVO_TRACE --> EVO_EXTRACT
+    EVO_EXTRACT --> EVO_CASE
+    EVO_CASE --> TEMPLATE_MATCH
+    EVO_CASE --> EVO_ANALYZE
+    EVO_ANALYZE --> EVO_OPTIMIZE
+    EVO_OPTIMIZE --> AGENT_SELECT
+    EVO_OPTIMIZE --> DAG_ENGINE
+
+    %% 技能缺口分析触发Skill搜索
+    EVO_ANALYZE --> |"发现缺口"| ACQ_SKILL
+
+    %% 基础设施连接
+    EXEC_CTRL <--> MQ
+    AgentPool <--> MQ
+    EXEC_CTRL --> MONITOR
+    EXEC_CTRL --> LOG
+
+    %% 样式
+    classDef gateway fill:#3498DB,stroke:#2980B9,color:#fff
+    classDef dispatch fill:#9B59B6,stroke:#8E44AD,color:#fff
+    classDef orch fill:#E74C3C,stroke:#C0392B,color:#fff
+    classDef agent fill:#2ECC71,stroke:#27AE60,color:#fff
+    classDef memory fill:#F39C12,stroke:#E67E22,color:#fff
+    classDef tool fill:#1ABC9C,stroke:#16A085,color:#fff
+    classDef evo fill:#E91E63,stroke:#C2185B,color:#fff
+    classDef infra fill:#607D8B,stroke:#455A64,color:#fff
+    classDef acquire fill:#FF9800,stroke:#F57C00,color:#fff
+    classDef security fill:#F44336,stroke:#D32F2F,color:#fff
+    classDef source fill:#795548,stroke:#5D4037,color:#fff
+
+    class UI_API,UI_WEB,UI_MSG gateway
+    class INTENT,CLASSIFY,TEMPLATE_MATCH dispatch
+    class DAG_ENGINE,AGENT_SELECT,EXEC_CTRL,QUALITY_GATE orch
+    class AG_CODE,AG_DATA,AG_RESEARCH,AG_WRITE,AG_REASON,AG_CUSTOM agent
+    class MEM_SHORT,MEM_LONG,MEM_SHARED memory
+    class TOOL_EXEC,TOOL_SEARCH,TOOL_FILE,TOOL_API,TOOL_DB,TOOL_BROWSER tool
+    class EVO_FEEDBACK,EVO_TRACE,EVO_EXTRACT,EVO_CASE,EVO_ANALYZE,EVO_OPTIMIZE evo
+    class MQ,MONITOR,LOG,CONFIG infra
+    class ACQ_HISTORY,ACQ_SEARCH,ACQ_SKILL acquire
+    class SEC_STATIC,SEC_PERM,SEC_SANDBOX,SEC_RATE,SEC_QUALITY,SEC_MONITOR security
+    class SRC_OFFICIAL,SRC_COMMUNITY,SRC_WILD source

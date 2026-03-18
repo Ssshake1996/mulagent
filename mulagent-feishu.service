@@ -1,0 +1,18 @@
+[Unit]
+Description=MulAgent Feishu Bot (WebSocket long-connection)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/yuxia/mul-agent
+Environment=PYTHONPATH=/home/yuxia/mul-agent/src
+ExecStart=/home/yuxia/mul-agent/.venv/bin/python -m gateway.feishu_bot
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mulagent-feishu
+
+[Install]
+WantedBy=default.target
