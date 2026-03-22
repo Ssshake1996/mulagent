@@ -159,9 +159,9 @@ async def _retrospective(
         retro = json.loads(response.content)
 
         # Store as negative experience in Qdrant
-        from common.vector import text_to_embedding
+        from common.vector import text_to_embedding_async
 
-        embedding = text_to_embedding(trace.user_input)
+        embedding = await text_to_embedding_async(trace.user_input)
         point_id = str(uuid.uuid4())
         qdrant.upsert(
             collection_name=collection_name,
@@ -185,6 +185,72 @@ async def _retrospective(
     except Exception as e:
         logger.warning("Retrospective failed: %s", e)
         return None
+
+
+def infer_implicit_quality(
+    session_turns: list[dict],
+    current_turn_index: int,
+) -> dict[str, Any]:
+    """Infer quality signals from user behavior without explicit feedback.
+
+    Signals:
+    - follow_up_count: number of follow-ups after this response (more = incomplete)
+    - repeated_question: user asked same/similar thing again (= bad answer)
+    - quick_next_topic: user moved on fast (= satisfied OR gave up)
+    - response_length_ratio: user's next message length vs current response
+
+    Returns dict of signal_name → value.
+    """
+    signals: dict[str, Any] = {}
+
+    if current_turn_index >= len(session_turns) - 1:
+        return signals  # No subsequent turns to analyze
+
+    current_response = session_turns[current_turn_index]
+    if current_response.get("role") != "assistant":
+        return signals
+
+    # Count follow-up questions before topic change
+    follow_ups = 0
+    for i in range(current_turn_index + 1, min(current_turn_index + 6, len(session_turns))):
+        turn = session_turns[i]
+        if turn.get("role") == "user":
+            follow_ups += 1
+
+    signals["follow_up_count"] = follow_ups
+
+    # Check for repeated question (next user message similar to previous user message)
+    prev_user = None
+    next_user = None
+    for i in range(current_turn_index - 1, -1, -1):
+        if session_turns[i].get("role") == "user":
+            prev_user = session_turns[i].get("content", "")
+            break
+    for i in range(current_turn_index + 1, len(session_turns)):
+        if session_turns[i].get("role") == "user":
+            next_user = session_turns[i].get("content", "")
+            break
+
+    if prev_user and next_user:
+        # Simple overlap check — if >50% of words overlap, likely repeated
+        prev_words = set(prev_user.lower().split())
+        next_words = set(next_user.lower().split())
+        if prev_words and next_words:
+            overlap = len(prev_words & next_words) / max(len(prev_words), 1)
+            signals["question_overlap"] = round(overlap, 2)
+            signals["likely_repeated"] = overlap > 0.5
+
+    # Infer quality score from signals
+    inferred_score = 3.0  # neutral baseline
+    if follow_ups == 0:
+        inferred_score += 0.5  # No follow-up = likely satisfied
+    elif follow_ups >= 3:
+        inferred_score -= 1.0  # Many follow-ups = incomplete answer
+    if signals.get("likely_repeated"):
+        inferred_score -= 1.5  # Repeated question = bad answer
+
+    signals["inferred_score"] = round(max(1.0, min(5.0, inferred_score)), 1)
+    return signals
 
 
 def _boost_experience(

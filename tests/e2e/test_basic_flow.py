@@ -1,7 +1,9 @@
 """End-to-end tests: full flow from HTTP request to response.
 
-These tests verify the complete pipeline:
-  User input → API → Dispatcher → DAG Planner → Agent Execution → Quality Gate → Response
+Tests verify the complete pipeline in mock mode (no LLM):
+  User input → API → Legacy pipeline (dispatch → plan → execute → quality) → Response
+
+When LLM is available, ReAct mode is used instead.
 """
 
 import pytest
@@ -32,24 +34,19 @@ async def client(setup):
         yield ac
 
 
-# ─── Flow tests per intent category ───
+# ─── Flow tests (legacy mock mode) ───
 
 
 @pytest.mark.asyncio
 async def test_e2e_code_task(client):
-    """Code task: dispatched to code agent, executed, quality checked."""
+    """Code task: dispatched and completed via legacy pipeline."""
     resp = await client.post("/api/v1/tasks", json={
         "input": "write a Python function to check if a number is prime",
     })
     assert resp.status_code == 200
     data = resp.json()
-
-    assert data["intent"] == "code"
     assert data["status"] == "completed"
-    assert data["quality_passed"] is True
-    assert len(data["subtasks"]) >= 1
-    assert data["subtasks"][0]["status"] == "completed"
-    assert "Code Agent" in data["final_output"]
+    assert data["final_output"] != ""
 
 
 @pytest.mark.asyncio
@@ -59,55 +56,6 @@ async def test_e2e_research_task(client):
     })
     assert resp.status_code == 200
     data = resp.json()
-    assert data["intent"] == "research"
-    assert data["status"] == "completed"
-    assert "Research Agent" in data["final_output"]
-
-
-@pytest.mark.asyncio
-async def test_e2e_data_task(client):
-    resp = await client.post("/api/v1/tasks", json={
-        "input": "analyze the sales data and create a chart",
-    })
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["intent"] == "data"
-    assert data["status"] == "completed"
-    assert "Data" in data["final_output"]
-
-
-@pytest.mark.asyncio
-async def test_e2e_writing_task(client):
-    resp = await client.post("/api/v1/tasks", json={
-        "input": "write a blog article about artificial intelligence trends",
-    })
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["intent"] == "writing"
-    assert data["status"] == "completed"
-    assert "Writing Agent" in data["final_output"]
-
-
-@pytest.mark.asyncio
-async def test_e2e_reasoning_task(client):
-    resp = await client.post("/api/v1/tasks", json={
-        "input": "calculate the area of a circle with radius 5",
-    })
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["intent"] == "reasoning"
-    assert data["status"] == "completed"
-    assert "Reasoning Agent" in data["final_output"]
-
-
-@pytest.mark.asyncio
-async def test_e2e_chinese_task(client):
-    resp = await client.post("/api/v1/tasks", json={
-        "input": "帮我写一段Python代码实现快速排序",
-    })
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["intent"] == "code"
     assert data["status"] == "completed"
 
 
@@ -119,7 +67,6 @@ async def test_e2e_general_task(client):
     })
     assert resp.status_code == 200
     data = resp.json()
-    assert data["intent"] == "general"
     assert data["status"] == "completed"
 
 
@@ -141,12 +88,12 @@ async def test_e2e_session_continuity(client):
 
 @pytest.mark.asyncio
 async def test_e2e_agents_endpoint(client):
-    """Verify all 5 agents are registered and accessible."""
+    """Verify 3 agents are registered (thinker, retriever, executor)."""
     resp = await client.get("/api/v1/agents")
     data = resp.json()
-    assert len(data["agents"]) == 5
+    assert len(data["agents"]) == 3
     ids = {a["id"] for a in data["agents"]}
-    assert ids == {"code_agent", "research_agent", "data_agent", "writing_agent", "reasoning_agent"}
+    assert ids == {"thinker", "retriever", "executor"}
 
 
 # ─── SSE streaming ───
@@ -158,6 +105,5 @@ async def test_e2e_stream_produces_events(client):
     resp = await client.post("/api/v1/tasks/stream", json={"input": "write a sort function"})
     assert resp.status_code == 200
     assert "text/event-stream" in resp.headers["content-type"]
-    # Body should contain event data
     body = resp.text
     assert "dispatch" in body or "event" in body

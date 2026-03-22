@@ -7,6 +7,12 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/home/yuxia/mul-agent
 Environment=PYTHONPATH=/home/yuxia/mul-agent/src
+Environment=PATH=/home/yuxia/.npm-global/bin:/home/yuxia/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=http_proxy=
+Environment=https_proxy=
+Environment=HTTP_PROXY=
+Environment=HTTPS_PROXY=
+Environment=no_proxy=
 ExecStart=/home/yuxia/mul-agent/.venv/bin/python -m gateway.feishu_bot
 Restart=always
 RestartSec=5

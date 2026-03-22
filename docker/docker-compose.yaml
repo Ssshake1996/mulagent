@@ -37,7 +37,48 @@ services:
       interval: 5s
       retries: 3
 
+  # ── Application services ──
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["api"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../config:/app/config:ro
+      - app_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+
+  bot:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["bot"]
+    volumes:
+      - ../config:/app/config:ro
+      - app_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+
 volumes:
   redis_data:
   pg_data:
   qdrant_data:
+  app_data:

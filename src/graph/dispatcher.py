@@ -38,10 +38,10 @@ async def dispatch_node(state: AgentState, llm=None, qdrant=None, collection_nam
     experiences = []
     if qdrant is not None:
         try:
-            from common.vector import text_to_embedding
+            from common.vector import text_to_embedding_async
             from evolution.experience import search_similar_experiences
 
-            query_vec = text_to_embedding(user_input)
+            query_vec = await text_to_embedding_async(user_input)
             experiences = await search_similar_experiences(qdrant, collection_name, query_vec, top_k=3)
             if experiences:
                 logger.info("Found %d similar experiences for dispatch", len(experiences))

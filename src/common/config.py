@@ -82,9 +82,48 @@ class FeishuSettings(BaseSettings):
     autostart: bool = False  # whether to enable systemd service on boot
 
 
+class EmbeddingSettings(BaseSettings):
+    """Embedding model configuration.
+
+    Supports any OpenAI-compatible embedding API (DashScope, OpenAI, local, etc.).
+    When not configured, falls back to LLM-based keyword extraction + hashing.
+    """
+    model: str = ""           # e.g. "text-embedding-v3"
+    api_key: str = ""
+    base_url: str = ""        # e.g. "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    dimensions: int = 1024    # output vector dimensions
+
+
+class ReactSettings(BaseSettings):
+    """ReAct orchestrator configuration."""
+    max_rounds: int = 15           # 最大推理轮数
+    timeout: int = 600             # 整体超时（秒）— 10 分钟
+    tool_timeout: int = 120        # 单工具超时（秒）
+    max_parallel_tools: int = 5    # 工具并行执行上限，1 = 串行
+    max_conversation_pairs: int = 4  # 保留的对话轮数
+
+
+class SandboxSettings(BaseSettings):
+    """Docker sandbox configuration for shell/code execution."""
+    enabled: bool = True               # 启用 Docker 沙箱（不可用时自动降级）
+    image: str = "python:3.12-slim"    # 沙箱镜像
+    memory_limit: str = "512m"         # 内存限制
+    cpu_limit: float = 1.0             # CPU 核数限制
+    network: bool = True               # 是否允许网络访问
+    workdir: str = "/workspace"        # 容器内工作目录
+
+
 class SecuritySettings(BaseSettings):
-    max_sandbox_timeout_seconds: int = 30
+    max_sandbox_timeout_seconds: int = 300
     max_sandbox_memory_mb: int = 512
+
+
+class ObservabilitySettings(BaseSettings):
+    """Observability configuration."""
+    enable_prometheus: bool = True     # Expose /metrics endpoint
+    enable_tracing: bool = True        # Enable distributed tracing
+    alert_webhook_url: str = ""        # Optional webhook for alerts
+    metrics_retention_minutes: int = 60  # In-memory metrics window
 
 
 class Settings(BaseSettings):
@@ -99,7 +138,11 @@ class Settings(BaseSettings):
     llm: LLMSettings = Field(default_factory=LLMSettings)
     openclaw: OpenClawSettings = Field(default_factory=OpenClawSettings)
     feishu: FeishuSettings = Field(default_factory=FeishuSettings)
+    embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
+    react: ReactSettings = Field(default_factory=ReactSettings)
+    sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
+    observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
 
 
 def _parse_llm_settings(raw_llm: dict[str, Any]) -> LLMSettings:
@@ -132,10 +175,24 @@ def load_settings(config_path: Path | None = None) -> Settings:
         llm=_parse_llm_settings(raw.get("llm", {})),
         openclaw=OpenClawSettings(**raw.get("openclaw", {})),
         feishu=FeishuSettings(**raw.get("feishu", {})),
+        embedding=EmbeddingSettings(**raw.get("embedding", {})),
+        react=ReactSettings(**raw.get("react", {})),
+        sandbox=SandboxSettings(**raw.get("sandbox", {})),
         security=SecuritySettings(**raw.get("security", {})),
+        observability=ObservabilitySettings(**raw.get("observability", {})),
     )
 
 
 @lru_cache
 def get_settings() -> Settings:
     return load_settings()
+
+
+def reload_settings() -> Settings:
+    """Force reload settings from disk (config hot-reload).
+
+    Clears the lru_cache and re-reads settings.yaml.
+    Returns the new Settings object.
+    """
+    get_settings.cache_clear()
+    return get_settings()

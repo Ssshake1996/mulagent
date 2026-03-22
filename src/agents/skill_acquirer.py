@@ -63,10 +63,10 @@ class SkillAcquirer:
             return AcquisitionResult(level=AcquisitionLevel.HISTORY, found=False, content="")
 
         try:
-            from common.vector import text_to_embedding
+            from common.vector import text_to_embedding_async
             from evolution.experience import search_similar_experiences
 
-            query_vec = text_to_embedding(task)
+            query_vec = await text_to_embedding_async(task)
             experiences = await search_similar_experiences(
                 self._qdrant, self._collection_name, query_vec, top_k=3,
             )

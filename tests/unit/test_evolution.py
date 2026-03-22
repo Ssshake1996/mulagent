@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from common.vector import VECTOR_DIM, ensure_collection, get_qdrant_client, text_to_embedding
+from common.vector import get_vector_dim, ensure_collection, get_qdrant_client, text_to_embedding
 from evolution.experience import extract_experience, search_similar_experiences, store_experience
 
 
@@ -11,7 +11,7 @@ from evolution.experience import extract_experience, search_similar_experiences,
 
 def test_embedding_dimension():
     vec = text_to_embedding("hello world")
-    assert len(vec) == VECTOR_DIM
+    assert len(vec) == get_vector_dim()
 
 
 def test_embedding_deterministic():

@@ -1,0 +1,46 @@
+# 自定义工具配置
+# 在此文件中定义外部 API 工具，系统启动时自动加载。
+#
+# 字段说明:
+#   name:          工具名称（唯一标识）
+#   description:   工具描述（LLM 根据此决定是否调用）
+#   endpoint:      API 地址
+#   method:        HTTP 方法 (GET/POST/PUT/DELETE)
+#   params:        参数定义（LLM 会按此传参）
+#   headers:       请求头（支持 ${ENV_VAR} 引用环境变量）
+#   response_path: 从响应 JSON 中提取数据的路径（如 "data.result"）
+#   timeout:       超时秒数（默认 30）
+#
+# 示例:
+#
+# tools:
+#   - name: weather
+#     description: "查询指定城市的实时天气信息"
+#     endpoint: "https://api.seniverse.com/v3/weather/now.json"
+#     method: GET
+#     params:
+#       location:
+#         type: string
+#         description: "城市名称，如 beijing"
+#         required: true
+#     headers:
+#       Authorization: "Bearer ${WEATHER_API_KEY}"
+#     response_path: "results.0.now"
+#
+#   - name: create_issue
+#     description: "在 GitHub 仓库创建 Issue"
+#     endpoint: "https://api.github.com/repos/myorg/myrepo/issues"
+#     method: POST
+#     params:
+#       title:
+#         type: string
+#         description: "Issue 标题"
+#         required: true
+#       body:
+#         type: string
+#         description: "Issue 内容（Markdown）"
+#     headers:
+#       Authorization: "token ${GITHUB_TOKEN}"
+#       Accept: "application/vnd.github.v3+json"
+
+tools: []
