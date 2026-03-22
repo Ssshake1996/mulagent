@@ -1,7 +1,7 @@
 """Isolation tools: delegate work to sub-agents with independent context.
 
 - delegate: Spawn a sub-agent to handle a subtask, returns compressed result.
-  Supports specialized roles from config/agents.yaml.
+  Supports specialized roles from config/agents.yaml and auto-loaded skills.
 """
 
 from __future__ import annotations
@@ -21,22 +21,35 @@ _CONFIG_DIR = Path(__file__).parent.parent.parent / "config"
 
 
 def _load_roles() -> dict[str, dict]:
-    """Load role configurations from config/agents.yaml (cached)."""
+    """Load role configurations from agents.yaml + auto-loaded skills (cached)."""
     global _role_configs
     if _role_configs is not None:
         return _role_configs
 
+    # 1. Load from agents.yaml
+    yaml_roles: dict[str, dict] = {}
     try:
         import yaml
         config_path = _CONFIG_DIR / "agents.yaml"
         with open(config_path) as f:
             data = yaml.safe_load(f)
-        _role_configs = data.get("roles", {})
-        logger.info("Loaded %d role configs from agents.yaml", len(_role_configs))
+        yaml_roles = data.get("roles", {})
+        logger.info("Loaded %d role configs from agents.yaml", len(yaml_roles))
     except Exception as e:
         logger.warning("Failed to load role configs: %s", e)
-        _role_configs = {}
 
+    # 2. Merge auto-loaded skills (skills don't override yaml roles)
+    try:
+        from tools.skill_loader import load_skills
+        skills = load_skills()
+        for key, cfg in skills.items():
+            if key not in yaml_roles:
+                yaml_roles[key] = cfg
+                logger.info("Skill '%s' registered as delegate role", key)
+    except Exception as e:
+        logger.warning("Skill loading failed: %s", e)
+
+    _role_configs = yaml_roles
     return _role_configs
 
 
@@ -130,11 +143,6 @@ _DOMAIN_SIGNALS: dict[str, list[str]] = {
     "architect": ["architecture", "design", "scalab", "架构", "设计"],
     "code_review": ["review", "审查", "代码审查"],
     "build_errors": ["build", "compile", "构建", "编译"],
-    "novelist": [
-        "小说", "novel", "章节", "chapter", "写作", "创作", "story",
-        "悬念", "角色", "character", "剧情", "plot", "连载",
-        "言情", "玄幻", "悬疑", "科幻", "武侠", "仙侠",
-    ],
 }
 
 
@@ -263,11 +271,16 @@ async def _dynamic_knowledge_inject(
 
 
 def reload_roles():
-    """Force reload of role configs and knowledge bases. Used by hot-reload."""
+    """Force reload of role configs, knowledge bases, and skills. Used by hot-reload."""
     global _role_configs
     _role_configs = None
     _knowledge_cache.clear()
-    logger.info("Role configs and knowledge cache cleared")
+    try:
+        from tools.skill_loader import reload_skills
+        reload_skills()
+    except Exception:
+        pass
+    logger.info("Role configs, knowledge cache, and skills cleared")
 
 
 async def _delegate(params: dict[str, Any], **deps: Any) -> str:
@@ -416,45 +429,52 @@ async def _delegate(params: dict[str, Any], **deps: Any) -> str:
         return f"Subtask failed: {e}"
 
 
-DELEGATE = ToolDef(
-    name="delegate",
-    description=(
-        "Delegate a complex subtask to a specialized sub-agent with its own independent context. "
-        "Use this when a task requires deep research (>3 searches), lengthy code generation, "
-        "or multi-step operations. Specify a role for specialized behavior: "
-        "'planner' (task decomposition), 'architect' (system design), "
-        "'researcher' (multi-source research), 'analyst' (data analysis), "
-        "'coder' (code gen/debug), 'code_reviewer' (code review), "
-        "'build_resolver' (fix build errors), 'tdd_guide' (test-driven dev), "
-        "'security_auditor' (security audit), 'novelist' (Chinese novel writing), "
-        "'writer' (content creation), 'executor' (shell/file ops), 'guardian' (quality review)."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "task": {
-                "type": "string",
-                "description": "Clear description of the subtask to delegate",
+def _build_delegate_tool() -> ToolDef:
+    """Build the delegate ToolDef with dynamically generated role enum/description.
+
+    The role list is generated from agents.yaml + auto-loaded skills,
+    so adding a skill never requires editing this file.
+    """
+    roles = _load_roles()
+
+    # Generate description
+    try:
+        from tools.skill_loader import get_delegate_description, get_all_role_names
+        yaml_roles = {k: v for k, v in roles.items() if "_skill_dir" not in v}
+        description = get_delegate_description(yaml_roles)
+        role_enum = get_all_role_names(yaml_roles)
+    except Exception:
+        # Fallback: use all loaded role keys
+        description = (
+            "Delegate a complex subtask to a specialized sub-agent. "
+            f"Available roles: {', '.join(sorted(roles.keys()))}."
+        )
+        role_enum = sorted(roles.keys())
+
+    return ToolDef(
+        name="delegate",
+        description=description,
+        parameters={
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "Clear description of the subtask to delegate",
+                },
+                "role": {
+                    "type": "string",
+                    "description": "Specialist role for the sub-agent. Choose based on task type.",
+                    "enum": role_enum,
+                },
+                "context": {
+                    "type": "string",
+                    "description": "Brief context/background for the sub-agent (optional)",
+                },
             },
-            "role": {
-                "type": "string",
-                "description": (
-                    "Specialist role for the sub-agent. Choose based on task type."
-                ),
-                "enum": [
-                    "planner", "architect",
-                    "researcher", "analyst",
-                    "coder", "code_reviewer", "build_resolver", "tdd_guide",
-                    "security_auditor",
-                    "novelist", "writer", "executor", "guardian",
-                ],
-            },
-            "context": {
-                "type": "string",
-                "description": "Brief context/background for the sub-agent (optional)",
-            },
+            "required": ["task"],
         },
-        "required": ["task"],
-    },
-    fn=_delegate,
-)
+        fn=_delegate,
+    )
+
+
+DELEGATE = _build_delegate_tool()

@@ -47,6 +47,7 @@ mul-agent/
 │   │   ├── registry.py            #   工具注册表
 │   │   ├── base.py                #   ToolDef 基类
 │   │   ├── isolation.py           #   delegate 子 agent + 知识注入
+│   │   ├── skill_loader.py        #   Skill 自动发现与注册
 │   │   ├── discovery.py           #   web_search, knowledge_recall
 │   │   ├── injection.py           #   web_fetch, read_file, list_dir
 │   │   ├── generation.py          #   execute_shell, code_run, write_file, edit_file
@@ -87,15 +88,11 @@ mul-agent/
 ├── config/
 │   ├── settings.yaml              # 运行时配置（含 API Key，不入 git）
 │   ├── settings.yaml.example      # 配置模板
-│   ├── agents.yaml                # 13 个专业角色定义
+│   ├── agents.yaml                # 12 个专业角色定义
 │   ├── tools.yaml                 # 工具配置
-│   ├── knowledge/                 # 角色知识库
-│   │   ├── *.md                   #   通用知识库（19 个文件）
-│   │   └── novelist/              #   小说创作参考资料（17 个文件）
+│   ├── knowledge/                 # 角色知识库（18 个 .md 文件）
+│   ├── skills/                    # 外部 Skill 目录（自动注册为 delegate 角色）
 │   └── prompts/                   # LLM 提示词模板
-├── scripts/
-│   ├── check_chapter_wordcount.py # 章节字数检查脚本
-│   └── detect_redundancy.py       # 冗余描述检测脚本（6类问题）
 ├── tests/
 │   ├── unit/                      # 单元测试（12 个文件）
 │   ├── integration/               # 集成测试
@@ -142,7 +139,7 @@ react_loop(user_input, tools, llm)
 
 ### 3.3 子 Agent 委派
 
-`delegate` 工具会启动独立 ReAct 循环（最多 5 轮、90s 超时），支持 13 种专业角色：
+`delegate` 工具会启动独立 ReAct 循环（最多 5 轮、90s 超时），支持 12 个内置角色 + 自动加载的 Skill 角色：
 
 | 类别 | 角色 |
 |------|------|
@@ -150,13 +147,15 @@ react_loop(user_input, tools, llm)
 | 研究 | researcher, analyst |
 | 代码 | coder, code_reviewer, build_resolver, tdd_guide |
 | 安全 | security_auditor |
-| 创作 | novelist |
 | 内容 | writer, executor, guardian |
+| Skill | 自动从 config/skills/ 和 SKILL_DIRS 环境变量加载 |
 
-角色定义在 `config/agents.yaml`，每个角色有：
+**内置角色**定义在 `config/agents.yaml`，每个角色有：
 - `prompt`: 系统提示词
 - `tools`: 允许的工具子集
 - `knowledge`: 注入的知识库文件（来自 `config/knowledge/*.md`）
+
+**Skill 角色**通过 `skill_loader.py` 自动发现，只需放入 skill 目录即可注册（见 10.4）。
 
 ---
 
@@ -318,6 +317,47 @@ feishu:
 2. 在角色的 `knowledge:` 列表中引用
 3. 多个角色可共享同一知识库文件
 
+### 10.4 注册外部 Skill（零代码）
+
+Skill 是自包含的能力包，遵循标准目录结构：
+
+```
+skill-dir/
+├── SKILL.md        # YAML frontmatter (name, description) + prompt body
+├── references/     # 参考资料文件，子 agent 通过 read_file 读取
+└── scripts/        # 工具脚本，子 agent 通过 execute_shell 执行
+```
+
+**注册方式**（任选一种）：
+
+1. **放入 `config/skills/`**（推荐）
+   ```bash
+   # 符号链接
+   ln -s /path/to/my-skill config/skills/my-skill
+   # 或直接复制
+   cp -r /path/to/my-skill config/skills/
+   ```
+
+2. **设置 SKILL_DIRS 环境变量**
+   ```bash
+   export SKILL_DIRS="/path/to/skills-dir1:/path/to/skills-dir2"
+   ```
+
+注册后 delegate 工具自动发现，无需编辑任何代码或配置文件。
+
+**SKILL.md frontmatter 格式**：
+```yaml
+---
+name: my-skill-name
+description: 技能描述，用于路由决策
+metadata:
+  trigger: 触发关键词
+---
+# Prompt body here...
+```
+
+`references/` 和 `scripts/` 中的相对路径会自动解析为绝对路径。
+
 ---
 
 ## 11. 关键设计决策
@@ -335,66 +375,16 @@ feishu:
 
 ---
 
-## 12. 小说创作功能（Novelist）
+## 12. 变更日志
 
-通过 `delegate` 工具的 `novelist` 角色提供完整的中文小说创作能力，100% 整合自 chinese-novelist-skill v2.0。
+### v0.4.0 — Skill 自动加载机制（当前）
 
-### 功能概览
-
-- **三阶段创作流程**：5问确认 → 规划（大纲/人物/悬念） → 逐章自动创作
-- **双模式**：标准模式（≤50章） / 巨著模式（>50章，卷-篇-章三级结构）
-- **四级悬念追踪**：全书级/卷级/篇章级/章节级，含健康度检查
-- **质量保证**：每章18步创作流程、深度润色去AI味、冗余检测
-- **爆款技法**：一句话人设、力量体系、伏笔经济学、名场面、情绪节奏波形
-
-### 文件清单
-
-| 路径 | 说明 |
-|------|------|
-| `config/agents.yaml` → `novelist` | 角色定义（含完整创作流程 prompt） |
-| `config/knowledge/novelist.md` | 知识库索引 + 七大黄金法则 + 关键检查清单 |
-| `config/knowledge/novelist/*.md` | 17 个参考资料文件（章节指南、悬念技巧、人物塑造等） |
-| `scripts/check_chapter_wordcount.py` | 章节字数检查（3000-5000字/章，支持卷目录递归） |
-| `scripts/detect_redundancy.py` | 六类质量检测（套路词/重复片段/相似描述/形容词堆砌/标点/句式） |
-
-### 使用方式
-
-用户通过飞书 Bot 或 API 发送创作请求，系统自动路由到 novelist 角色：
-
-```
-用户: 帮我写一部悬疑推理小说，20章
-系统: delegate(role="novelist", task="创作一部悬疑推理小说，20章")
-```
-
-### 输出结构
-
-```
-novels/
-└── [小说名称]/
-    ├── 00-大纲.md              # 章节规划 + TODO list
-    ├── 01-人物档案.md           # 角色档案 + 成长轨迹
-    ├── 02-悬念追踪器.md         # 悬念状态管理
-    ├── 第01章-[标题].md
-    ├── 第02章-[标题].md
-    └── ...
-```
-
-巨著模式（>50章）额外有卷目录结构：`卷一-[卷名]/00-卷纲.md`
-
----
-
-## 13. 变更日志
-
-### v0.4.0 — 整合小说创作功能（当前）
-
-- 新增 `novelist` 角色（第13个专业角色），完整整合 chinese-novelist-skill v2.0
-- 新增 `config/knowledge/novelist/` 目录，含17个创作参考资料
-- 新增 `config/knowledge/novelist.md` 知识库索引
-- 新增 `scripts/check_chapter_wordcount.py` 章节字数检查脚本
-- 新增 `scripts/detect_redundancy.py` 六类冗余描述检测脚本
-- 更新 delegate 工具：新增 novelist 到角色枚举和描述
-- 更新系统提示词：新增 Creative 角色分类
-- 更新智能知识选择：新增小说创作领域关键词信号
+- 新增 `src/tools/skill_loader.py`：扫描 Skill 目录，解析 SKILL.md frontmatter，自动注册为 delegate 角色
+- 新增 `config/skills/` 目录：放入或符号链接 Skill 即可注册，零代码
+- 支持 `SKILL_DIRS` 环境变量指定额外 Skill 目录
+- delegate 工具的角色枚举和描述动态生成（不再硬编码）
+- SKILL.md 中的相对路径（references/、scripts/）自动解析为绝对路径
+- 已通过 chinese-novelist-skill v2.0 验证（符号链接注册，100% 功能可用）
 
 ### v0.3.0 — 清理 Legacy 代码
 
