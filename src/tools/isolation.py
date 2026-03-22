@@ -130,6 +130,11 @@ _DOMAIN_SIGNALS: dict[str, list[str]] = {
     "architect": ["architecture", "design", "scalab", "架构", "设计"],
     "code_review": ["review", "审查", "代码审查"],
     "build_errors": ["build", "compile", "构建", "编译"],
+    "novelist": [
+        "小说", "novel", "章节", "chapter", "写作", "创作", "story",
+        "悬念", "角色", "character", "剧情", "plot", "连载",
+        "言情", "玄幻", "悬疑", "科幻", "武侠", "仙侠",
+    ],
 }
 
 
@@ -421,8 +426,8 @@ DELEGATE = ToolDef(
         "'researcher' (multi-source research), 'analyst' (data analysis), "
         "'coder' (code gen/debug), 'code_reviewer' (code review), "
         "'build_resolver' (fix build errors), 'tdd_guide' (test-driven dev), "
-        "'security_auditor' (security audit), 'writer' (content creation), "
-        "'executor' (shell/file ops), 'guardian' (quality review)."
+        "'security_auditor' (security audit), 'novelist' (Chinese novel writing), "
+        "'writer' (content creation), 'executor' (shell/file ops), 'guardian' (quality review)."
     ),
     parameters={
         "type": "object",
@@ -441,7 +446,7 @@ DELEGATE = ToolDef(
                     "researcher", "analyst",
                     "coder", "code_reviewer", "build_resolver", "tdd_guide",
                     "security_auditor",
-                    "writer", "executor", "guardian",
+                    "novelist", "writer", "executor", "guardian",
                 ],
             },
             "context": {
