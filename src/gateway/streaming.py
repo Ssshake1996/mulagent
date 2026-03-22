@@ -1,6 +1,6 @@
 """Server-Sent Events (SSE) streaming for real-time task progress.
 
-Rewritten to use the ReAct orchestrator with per-round progress events.
+Uses the ReAct orchestrator with per-round progress events.
 
 Events emitted:
   - "progress": {round, action, detail} — each tool call or thinking step
@@ -21,8 +21,6 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from agents.adapter import AdapterFactory
-from agents.registry import AgentRegistry
 from common.llm import LLMManager
 from graph.orchestrator import run_react
 
@@ -31,8 +29,6 @@ stream_router = APIRouter()
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-_registry: AgentRegistry | None = None
-_factory: AdapterFactory | None = None
 _llm = None
 _llm_manager: LLMManager | None = None
 _db_session_factory: async_sessionmaker | None = None
@@ -41,12 +37,10 @@ _collection_name: str = "case_library"
 
 
 def init_stream_dependencies(
-    registry: AgentRegistry, factory: AdapterFactory, llm=None, llm_manager=None,
+    llm=None, llm_manager=None,
     db_session_factory=None, qdrant=None, collection_name: str = "case_library",
 ):
-    global _registry, _factory, _llm, _llm_manager, _db_session_factory, _qdrant, _collection_name
-    _registry = registry
-    _factory = factory
+    global _llm, _llm_manager, _db_session_factory, _qdrant, _collection_name
     _llm = llm
     _llm_manager = llm_manager
     _db_session_factory = db_session_factory
@@ -98,8 +92,6 @@ async def _task_event_generator(
                 qdrant=_qdrant,
                 collection_name=_collection_name,
                 on_progress=on_progress,
-                registry=_registry,
-                adapter_factory=_factory,
             )
             result_holder.update(result)
         except Exception as e:

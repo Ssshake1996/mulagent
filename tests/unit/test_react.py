@@ -181,12 +181,11 @@ async def test_react_loop_timeout():
     assert len(result) > 0
 
 
-# ── Integration: run_react with legacy fallback ──
+# ── Integration: run_react without LLM ──
 
 @pytest.mark.asyncio
-async def test_run_react_legacy_fallback():
-    """When llm=None, should fall back to legacy pipeline."""
+async def test_run_react_no_llm():
+    """When llm=None, should return error status."""
     from graph.orchestrator import run_react
     result = await run_react(user_input="write hello world", llm=None)
-    assert result["status"] == "completed"
-    assert result["final_output"] != ""
+    assert result["status"] == "failed"

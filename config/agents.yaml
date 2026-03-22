@@ -1,25 +1,3 @@
-agents:
-  thinker:
-    name: "Thinker"
-    description: "General-purpose thinking agent. System prompt is dynamically generated per task based on intent, retrieved knowledge, and task context."
-    type: thinker
-    model: "qwen3.5-plus"
-    priority: 1
-
-  retriever:
-    name: "Retriever"
-    description: "Information retrieval agent with web search and knowledge base access. Used when the task requires external or internal information gathering."
-    type: retriever
-    model: "qwen3.5-plus"
-    priority: 2
-
-  executor:
-    name: "Executor"
-    description: "Action agent that executes shell commands, calls APIs, operates files, and performs tasks with real-world side effects. All operations are sandboxed and logged."
-    type: executor
-    model: "qwen3.5-plus"
-    priority: 3
-
 # ── 12 Specialized Sub-Agent Roles (for delegate tool) ─────────────
 #
 # Architecture: Role definition (this file) + Knowledge base (config/knowledge/*.md)

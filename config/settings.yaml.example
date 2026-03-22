@@ -49,10 +49,6 @@ llm:
     #   base_url: "http://localhost:11434/v1"
     #   max_tokens: 4096
 
-openclaw:
-  enabled: false           # 启用 OpenClaw agent 运行时
-  timeout: 120             # 单个 agent 调用超时（秒）
-
 feishu:
   app_id: ""               # 飞书应用 App ID
   app_secret: ""           # 飞书应用 App Secret

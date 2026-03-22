@@ -1,9 +1,8 @@
 """Feedback-driven evolution — closes the loop from user feedback to system improvement.
 
-Three mechanisms:
+Two mechanisms:
 1. Low-rating retrospective: LLM analyzes why a task failed, stores negative experience
-2. Agent stats update: feedback adjusts agent success_rate in registry
-3. Experience quality: high-rating boosts experience weight, low-rating demotes
+2. Experience quality: high-rating boosts experience weight, low-rating demotes
 """
 
 from __future__ import annotations
@@ -18,8 +17,7 @@ from qdrant_client.models import PointStruct
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agents.registry import AgentRegistry
-from models.trace import SubtaskTrace, TaskTrace
+from models.trace import TaskTrace
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +28,6 @@ async def process_feedback(
     comment: str | None,
     *,
     db: AsyncSession,
-    registry: AgentRegistry | None = None,
     qdrant: QdrantClient | None = None,
     collection_name: str = "case_library",
     llm=None,
@@ -47,19 +44,13 @@ async def process_feedback(
         logger.warning("Feedback for unknown task %s, skipping evolution", task_id)
         return {"actions": actions, "error": "task_trace_not_found"}
 
-    # 2. Update agent stats based on feedback
-    if registry is not None:
-        agent_updates = await _update_agent_stats(db, task_id, rating, registry)
-        if agent_updates:
-            actions.append({"type": "agent_stats_updated", "agents": agent_updates})
-
-    # 3. Low rating → retrospective analysis
+    # 2. Low rating → retrospective analysis
     if rating <= 2 and llm is not None and qdrant is not None:
         retro = await _retrospective(trace, comment, llm, qdrant, collection_name)
         if retro:
             actions.append({"type": "retrospective_stored", "pattern": retro.get("failure_pattern", "")})
 
-    # 4. High rating → boost experience quality in Qdrant
+    # 3. High rating → boost experience quality in Qdrant
     if rating >= 4 and qdrant is not None:
         boosted = _boost_experience(qdrant, collection_name, str(task_id), rating)
         if boosted:
@@ -75,49 +66,6 @@ async def _load_trace(db: AsyncSession, task_id: uuid.UUID) -> TaskTrace | None:
         select(TaskTrace).where(TaskTrace.id == task_id)
     )
     return result.scalar_one_or_none()
-
-
-async def _update_agent_stats(
-    db: AsyncSession,
-    task_id: uuid.UUID,
-    rating: int,
-    registry: AgentRegistry,
-) -> list[dict[str, Any]]:
-    """Update agent success_rate based on user feedback rating.
-
-    rating 4-5 → success, rating 1-2 → failure, rating 3 → neutral (skip)
-    """
-    if rating == 3:
-        return []
-
-    success = rating >= 4
-    result = await db.execute(
-        select(SubtaskTrace.agent_id).where(SubtaskTrace.task_id == task_id).distinct()
-    )
-    agent_ids = [row[0] for row in result.all()]
-
-    updates = []
-    for agent_id in agent_ids:
-        # Try exact match first, then try with "_agent" suffix
-        agent = registry.get(agent_id)
-        if agent is None:
-            agent = registry.get(f"{agent_id}_agent")
-        if agent is None:
-            logger.debug("Agent %s not found in registry, skipping stats update", agent_id)
-            continue
-
-        registry.update_stats(agent.id, success)
-        updates.append({
-            "agent_id": agent.id,
-            "new_success_rate": round(agent.success_rate, 4),
-            "total_runs": agent.total_runs,
-        })
-        logger.info(
-            "Agent %s stats updated: success_rate=%.4f (feedback=%d)",
-            agent.id, agent.success_rate, rating,
-        )
-
-    return updates
 
 
 async def _retrospective(

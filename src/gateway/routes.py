@@ -10,19 +10,15 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from agents.adapter import AdapterFactory
-from agents.registry import AgentRegistry
 from common.llm import LLMManager
 from evolution.feedback import record_feedback
 from evolution.trace import record_task_trace
-from graph.orchestrator import build_graph, run_react
+from graph.orchestrator import run_react
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Module-level singletons (initialized in lifespan)
-_registry: AgentRegistry | None = None
-_factory: AdapterFactory | None = None
 _llm = None
 _llm_manager: LLMManager | None = None
 _db_session_factory: async_sessionmaker | None = None
@@ -31,17 +27,13 @@ _collection_name: str = "case_library"
 
 
 def init_dependencies(
-    registry: AgentRegistry,
-    factory: AdapterFactory,
     llm=None,
     llm_manager=None,
     db_session_factory=None,
     qdrant=None,
     collection_name: str = "case_library",
 ):
-    global _registry, _factory, _llm, _llm_manager, _db_session_factory, _qdrant, _collection_name
-    _registry = registry
-    _factory = factory
+    global _llm, _llm_manager, _db_session_factory, _qdrant, _collection_name
     _llm = llm
     _llm_manager = llm_manager
     _db_session_factory = db_session_factory
@@ -83,7 +75,6 @@ class FeedbackResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     version: str
-    agents_count: int
     llm_default: str
     llm_models: list[dict[str, str]]
     db_connected: bool
@@ -105,7 +96,6 @@ def set_start_time():
 async def health_check():
     """Comprehensive health check: LLM, DB, Qdrant, Redis, tools."""
     import time
-    agent_count = len(_registry.list_all()) if _registry else 0
 
     # Check Redis connectivity
     redis_ok = False
@@ -143,7 +133,6 @@ async def health_check():
     return HealthResponse(
         status=status,
         version="0.1.0",
-        agents_count=agent_count,
         llm_default=_llm_manager.default_id if _llm_manager else "",
         llm_models=_llm_manager.list_models() if _llm_manager else [],
         db_connected=_db_session_factory is not None,
@@ -199,15 +188,13 @@ async def create_task(req: TaskRequest):
         llm = selected
         model_used = req.model
 
-    # Run via ReAct orchestrator (falls back to legacy if no LLM)
+    # Run via ReAct orchestrator
     try:
         result = await run_react(
             user_input=req.input,
             llm=llm,
             qdrant=_qdrant,
             collection_name=_collection_name,
-            registry=_registry,
-            adapter_factory=_factory,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Task execution failed: {e}")
@@ -289,7 +276,6 @@ async def submit_feedback(req: FeedbackRequest):
                 task_id=task_uuid,
                 comment=req.comment,
                 db=db,
-                registry=_registry,
                 qdrant=_qdrant,
                 collection_name=_collection_name,
                 llm=llm,
@@ -303,21 +289,6 @@ async def submit_feedback(req: FeedbackRequest):
         rating=req.rating,
         status="recorded",
     )
-
-
-@router.get("/agents")
-async def list_agents():
-    if _registry is None:
-        return {"agents": []}
-    return {
-        "agents": [
-            {
-                "id": a.id, "name": a.name, "description": a.description,
-                "skills": a.skills, "success_rate": a.success_rate, "total_runs": a.total_runs,
-            }
-            for a in _registry.list_all()
-        ]
-    }
 
 
 @router.get("/models")
@@ -377,16 +348,12 @@ async def list_checkpoints(session_id: str = ""):
 
 @router.post("/config/reload")
 async def reload_config():
-    """Hot-reload settings from config/settings.yaml.
-
-    Reloads configuration without restarting the service.
-    Note: some settings (LLM connections, DB connections) require restart.
-    """
+    """Hot-reload settings from config/settings.yaml."""
     try:
         from common.config import reload_settings
         from tools.isolation import reload_roles
         new_settings = reload_settings()
-        reload_roles()  # Also reload role configs and knowledge bases
+        reload_roles()
         return {
             "status": "reloaded",
             "debug": new_settings.debug,

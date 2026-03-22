@@ -71,11 +71,6 @@ class LLMSettings(BaseSettings):
         ]
 
 
-class OpenClawSettings(BaseSettings):
-    enabled: bool = False
-    timeout: int = 120
-
-
 class FeishuSettings(BaseSettings):
     app_id: str = ""
     app_secret: str = ""
@@ -136,7 +131,6 @@ class Settings(BaseSettings):
     redis: RedisSettings = Field(default_factory=RedisSettings)
     qdrant: QdrantSettings = Field(default_factory=QdrantSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
-    openclaw: OpenClawSettings = Field(default_factory=OpenClawSettings)
     feishu: FeishuSettings = Field(default_factory=FeishuSettings)
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     react: ReactSettings = Field(default_factory=ReactSettings)
@@ -173,7 +167,6 @@ def load_settings(config_path: Path | None = None) -> Settings:
         redis=RedisSettings(**raw.get("redis", {})),
         qdrant=QdrantSettings(**raw.get("qdrant", {})),
         llm=_parse_llm_settings(raw.get("llm", {})),
-        openclaw=OpenClawSettings(**raw.get("openclaw", {})),
         feishu=FeishuSettings(**raw.get("feishu", {})),
         embedding=EmbeddingSettings(**raw.get("embedding", {})),
         react=ReactSettings(**raw.get("react", {})),

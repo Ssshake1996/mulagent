@@ -11,15 +11,11 @@ async def client():
     app = create_app()
     transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        from agents.adapter import AdapterFactory
-        from agents.registry import load_registry
         from gateway.routes import init_dependencies
         from gateway.streaming import init_stream_dependencies
 
-        registry = load_registry()
-        factory = AdapterFactory()
-        init_dependencies(registry, factory, llm=None, llm_manager=None, db_session_factory=None, qdrant=None)
-        init_stream_dependencies(registry, factory, llm=None, llm_manager=None, db_session_factory=None, qdrant=None)
+        init_dependencies(llm=None, llm_manager=None, db_session_factory=None, qdrant=None)
+        init_stream_dependencies(llm=None, llm_manager=None, db_session_factory=None, qdrant=None)
 
         yield ac
 
@@ -30,15 +26,6 @@ async def test_health(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] in ("ok", "degraded")
-    assert data["agents_count"] == 3
-
-
-@pytest.mark.asyncio
-async def test_list_agents(client):
-    resp = await client.get("/api/v1/agents")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert len(data["agents"]) == 3
 
 
 @pytest.mark.asyncio
@@ -55,15 +42,7 @@ async def test_create_task_code(client):
     resp = await client.post("/api/v1/tasks", json={"input": "write a Python sort function"})
     assert resp.status_code == 200
     data = resp.json()
-    assert data["status"] == "completed"
-    assert data["final_output"] != ""
-
-
-@pytest.mark.asyncio
-async def test_create_task_with_invalid_model(client):
-    resp = await client.post("/api/v1/tasks", json={"input": "hello", "model": "nonexistent"})
-    # Without llm_manager, model param is ignored (no error)
-    assert resp.status_code == 200
+    assert data["status"] == "failed"  # No LLM configured in test
 
 
 @pytest.mark.asyncio
