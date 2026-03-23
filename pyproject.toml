@@ -38,7 +38,13 @@ dependencies = [
     "structlog",
 ]
 
+[project.scripts]
+mulagent = "cli.main:main"
+
 [project.optional-dependencies]
+cli = [
+    "textual>=0.80",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
@@ -50,6 +56,9 @@ dev = [
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

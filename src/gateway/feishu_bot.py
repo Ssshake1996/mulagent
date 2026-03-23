@@ -38,6 +38,7 @@ from common.db import create_session_factory
 from common.llm import LLMManager
 from common.vector import ensure_collection, get_qdrant_client
 from evolution.trace import record_task_trace
+from gateway.adapter import SessionManager
 from graph.conversation import ConversationStore
 from graph.orchestrator import run_react
 
@@ -47,11 +48,7 @@ logger = logging.getLogger("feishu_bot")
 _react_params: dict[str, Any] = {}  # params for run_react()
 _lark_client: lark.Client | None = None
 _db_session_factory = None
-_conv_store: ConversationStore | None = None
-
-# Session management: (user_id, chat_id) → session_id
-# This ensures private chat and each group chat have independent sessions
-_user_sessions: dict[str, str] = {}  # key = f"{user_id}:{chat_id}"
+_session_mgr: SessionManager | None = None
 
 # Message dedup: prevent re-processing retried messages (LRU via OrderedDict)
 from collections import OrderedDict
@@ -73,29 +70,6 @@ _FEEDBACK_TASKS_MAX = 200
 # Running tasks: task_key → asyncio.Event (set = cancelled)
 _running_tasks: dict[str, asyncio.Event] = {}
 
-
-def _session_key(user_id: str, chat_id: str) -> str:
-    """Build composite session key: user_id + chat_id.
-
-    This ensures private chat and each group chat maintain independent sessions.
-    """
-    return f"{user_id}:{chat_id}"
-
-
-def _get_or_create_session(user_id: str, chat_id: str) -> str:
-    """Get current session for user+chat, or create a new one."""
-    key = _session_key(user_id, chat_id)
-    if key not in _user_sessions:
-        _user_sessions[key] = f"feishu_{user_id}_{chat_id[-8:]}_{uuid.uuid4().hex[:6]}"
-    return _user_sessions[key]
-
-
-def _new_session(user_id: str, chat_id: str) -> str:
-    """Force create a new session for user+chat."""
-    key = _session_key(user_id, chat_id)
-    session_id = f"feishu_{user_id}_{chat_id[-8:]}_{uuid.uuid4().hex[:6]}"
-    _user_sessions[key] = session_id
-    return session_id
 
 # Tool display names for progress
 _TOOL_LABELS: dict[str, str] = {
@@ -122,7 +96,7 @@ _TOOL_LABELS: dict[str, str] = {
 
 def _init_resources():
     """Initialize all shared resources (called once at startup)."""
-    global _react_params, _lark_client, _db_session_factory, _TASK_TIMEOUT, _conv_store
+    global _react_params, _lark_client, _db_session_factory, _TASK_TIMEOUT, _session_mgr
 
     settings = get_settings()
 
@@ -144,8 +118,8 @@ def _init_resources():
     collection_name = settings.qdrant.collection_name if settings.qdrant else "case_library"
     ensure_collection(qdrant, collection_name)
 
-    # Conversation store
-    _conv_store = ConversationStore()
+    # Session manager (shared with CLI / Desktop via same data dir)
+    _session_mgr = SessionManager(ConversationStore())
 
     # Timeout: react.timeout (inner) + 40s buffer for LLM synthesis on timeout
     _TASK_TIMEOUT = settings.react.timeout + 40
@@ -172,8 +146,7 @@ def _init_resources():
     )
 
     # ── Session cleanup: remove old conversations ──
-    if _conv_store:
-        _conv_store.cleanup_old_sessions(max_age_days=30)
+    _session_mgr.conv_store.cleanup_old_sessions(max_age_days=30)
 
     logger.info(
         "Resources initialized: LLM=%s, Qdrant=ready, mode=ReAct",
@@ -414,14 +387,15 @@ async def _run_task_react(user_input: str, session_id: str, tracker: ProgressTra
     Loads conversation history and accumulated directives from the session
     to enable multi-turn dialogue.
     """
+    conv = _session_mgr.conv_store if _session_mgr else None
+
     # Load conversation context
     history = ""
     session_directives = None
-    if _conv_store:
-        history = _conv_store.get_history_for_prompt(session_id, max_turns=10)
-        session_directives = _conv_store.get_directives(session_id) or None
-        # Record user turn
-        _conv_store.append_turn(session_id, "user", user_input)
+    if conv:
+        history = conv.get_history_for_prompt(session_id, max_turns=10)
+        session_directives = conv.get_directives(session_id) or None
+        conv.append_turn(session_id, "user", user_input)
 
     result = await run_react(
         user_input=user_input,
@@ -432,13 +406,12 @@ async def _run_task_react(user_input: str, session_id: str, tracker: ProgressTra
     )
 
     # Record assistant turn and persist directives
-    if _conv_store:
+    if conv:
         output = result.get("final_output", "")
-        _conv_store.append_turn(session_id, "assistant", output)
-        # Persist directives extracted during this turn
+        conv.append_turn(session_id, "assistant", output)
         directives = result.get("directives", [])
         if directives:
-            _conv_store.save_directives(session_id, directives)
+            conv.save_directives(session_id, directives)
 
     return result
 
@@ -690,18 +663,16 @@ def _on_message(data) -> None:
 
     # Handle /new command — create new session and reply confirmation
     if cmd in ("/new", "/new session"):
-        session_id = _new_session(user_id, chat_id)
-        if _conv_store:
-            _conv_store.create(session_id, user_id)
-        _reply_card(message_id, f"✅ 新会话已创建\n\nSession: `{session_id}`")
-        logger.info("New session for user %s (chat %s): %s", user_id, chat_id[-8:], session_id)
+        if _session_mgr:
+            session_id = _session_mgr.new_session(user_id, chat_id)
+            _reply_card(message_id, f"✅ 新会话已创建\n\nSession: `{session_id}`")
+            logger.info("New session for user %s (chat %s): %s", user_id, chat_id[-8:], session_id)
         return
 
     # Handle /resume command — list or switch sessions
     if cmd == "/resume":
-        # List recent sessions
-        if _conv_store:
-            sessions = _conv_store.list_sessions(user_id, limit=8)
+        if _session_mgr:
+            sessions = _session_mgr.list_sessions(user_id, limit=8)
             if not sessions:
                 _reply_card(message_id, "没有找到历史会话。\n\n发送消息即可开始新对话。")
             else:
@@ -720,16 +691,15 @@ def _on_message(data) -> None:
 
     if cmd.startswith("/resume "):
         target = text.strip().split(maxsplit=1)[1].strip()
-        if _conv_store:
-            # Find matching session (support partial ID)
-            sessions = _conv_store.list_sessions(user_id, limit=50)
+        if _session_mgr:
+            sessions = _session_mgr.list_sessions(user_id, limit=50)
             matched = None
             for s in sessions:
                 if target in s["session_id"]:
                     matched = s
                     break
             if matched:
-                _user_sessions[_session_key(user_id, chat_id)] = matched["session_id"]
+                _session_mgr.resume_session(user_id, chat_id, matched["session_id"])
                 _reply_card(
                     message_id,
                     f"✅ 已恢复会话\n\n"
@@ -744,10 +714,10 @@ def _on_message(data) -> None:
             _reply_card(message_id, "会话存储未初始化。")
         return
 
-    session_id = _get_or_create_session(user_id, chat_id)
+    session_id = _session_mgr.get_or_create(user_id, chat_id) if _session_mgr else "fallback"
     # Ensure conversation file exists for this session
-    if _conv_store and _conv_store.load(session_id) is None:
-        _conv_store.create(session_id, user_id)
+    if _session_mgr:
+        _session_mgr.ensure_conversation(session_id, user_id)
     logger.info("Received from Feishu [%s] (chat:%s): %.80s...", session_id, chat_id[-8:], text)
 
     # Generate task_key for cancel/feedback tracking

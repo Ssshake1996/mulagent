@@ -28,6 +28,9 @@ Thumbs.db
 *.log
 /tmp/
 
+# Runtime data (conversations, sessions)
+data/
+
 # Database
 *.db
 *.sqlite3

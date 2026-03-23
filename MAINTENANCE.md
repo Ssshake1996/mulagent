@@ -1,33 +1,37 @@
 # mul-agent 项目维护说明
 
-> Universal Multi-Agent Collaboration Framework — 基于 ReAct 推理循环的多智能体协作框架，通过飞书 Bot 交付。
+> Universal Multi-Agent Collaboration Framework — 基于 ReAct 推理循环的多智能体协作框架，支持飞书 Bot、CLI (TUI/Headless)、HTTP API 多通道交付。
 
 ---
 
 ## 1. 架构总览
 
 ```
-用户 ──→ 飞书 Bot (WebSocket) ──→ run_react()
-                                     │
-                                     ▼
-                              ┌─────────────┐
-                              │  ReAct Loop  │  ← 核心推理循环
-                              │  (LLM 决策)  │
-                              └──────┬───────┘
-                                     │ 工具调用
-                    ┌────────────────┼────────────────┐
-                    ▼                ▼                 ▼
-              ┌──────────┐   ┌──────────┐    ┌──────────────┐
-              │ 搜索/检索 │   │ 文件/代码 │    │   delegate   │
-              │ web_search│   │ read_file │    │  (子 agent)  │
-              │ knowledge │   │ code_run  │    │  12 种角色    │
-              └──────────┘   │ git_ops   │    └──────┬───────┘
-                              │ sql_query │           │
-                              │ browser   │      再次进入
-                              └──────────┘     ReAct Loop
+             ┌─── 飞书 Bot (WebSocket) ───┐
+             │                             │
+用户 ────────┼─── CLI TUI / Headless ─────┼──→ SessionManager ──→ run_react()
+             │                             │          │
+             └─── HTTP API (FastAPI) ─────┘          ▼
+                                              ┌─────────────┐
+                                              │  ReAct Loop  │  ← 核心推理循环
+                                              │  (LLM 决策)  │
+                                              └──────┬───────┘
+                                                     │ 工具调用
+                                    ┌────────────────┼────────────────┐
+                                    ▼                ▼                 ▼
+                              ┌──────────┐   ┌──────────┐    ┌──────────────┐
+                              │ 搜索/检索 │   │ 文件/代码 │    │   delegate   │
+                              │ web_search│   │ read_file │    │  (子 agent)  │
+                              │ knowledge │   │ code_run  │    │  12 种角色    │
+                              └──────────┘   │ git_ops   │    └──────┬───────┘
+                                              │ sql_query │           │
+                                              │ browser   │      再次进入
+                                              └──────────┘     ReAct Loop
 ```
 
-**核心设计**：LLM 在推理循环中自主决定调用什么工具，无需意图分类或 DAG 规划。
+**核心设计**：
+- LLM 在推理循环中自主决定调用什么工具，无需意图分类或 DAG 规划
+- 多通道共享同一个 `SessionManager`，会话数据互通（文件级 JSON 存储）
 
 ---
 
@@ -37,6 +41,11 @@
 mul-agent/
 ├── src/
 │   ├── main.py                    # FastAPI 入口
+│   ├── cli/                       # CLI 模块（v0.5.0 新增）
+│   │   ├── main.py                #   CLI 入口（mulagent 命令）
+│   │   ├── runner.py              #   AgentRunner（全栈任务执行器）
+│   │   ├── tui.py                 #   Textual TUI（聊天面板、会话侧栏）
+│   │   └── headless.py            #   Headless REPL（纯 stdin/stdout）
 │   ├── graph/                     # 核心编排层
 │   │   ├── orchestrator.py        #   入口：run_react()
 │   │   ├── react_orchestrator.py  #   ReAct 推理循环（核心）
@@ -62,7 +71,8 @@ mul-agent/
 │   │   ├── security.py            #   工具安全钩子
 │   │   └── plugins.py             #   插件系统
 │   ├── gateway/                   # 接入层
-│   │   ├── feishu_bot.py          #   飞书 Bot（主交付通道）
+│   │   ├── adapter.py             #   SessionManager + 进度协议（v0.5.0 新增）
+│   │   ├── feishu_bot.py          #   飞书 Bot（WebSocket 长连接）
 │   │   ├── routes.py              #   HTTP API 路由
 │   │   └── streaming.py           #   SSE 流式输出
 │   ├── common/                    # 基础设施
@@ -93,16 +103,18 @@ mul-agent/
 │   ├── knowledge/                 # 角色知识库（18 个 .md 文件）
 │   ├── skills/                    # 外部 Skill 目录（自动注册为 delegate 角色）
 │   └── prompts/                   # LLM 提示词模板
+├── scripts/
+│   └── setup.sh                   # 统一管理脚本（服务状态/重启/日志/启动 CLI）
 ├── tests/
-│   ├── unit/                      # 单元测试（12 个文件）
+│   ├── unit/                      # 单元测试（14 个文件，197 个用例）
 │   ├── integration/               # 集成测试
 │   └── e2e/                       # 端到端测试
-├── docker/docker-compose.yaml     # 基础设施编排
+├── docker/docker-compose.yaml     # 容器化部署编排
 ├── .github/workflows/ci.yml       # CI/CD 流水线
 ├── Dockerfile                     # 应用镜像
 ├── Makefile                       # 开发命令
 ├── alembic/                       # 数据库迁移
-└── pyproject.toml                 # 依赖定义
+└── pyproject.toml                 # 依赖定义 + CLI entry point
 ```
 
 ---
@@ -210,15 +222,48 @@ score = success_rate + C × √(ln(total_trials) / tool_trials)
 
 ---
 
-## 6. 基础设施
+## 6. 基础设施与服务管理
 
-| 组件 | 用途 | 默认端口 |
-|------|------|----------|
-| PostgreSQL 16 | 执行轨迹、反馈存储 | 5432 |
-| Redis 7 | 缓存、检查点、幂等键、工具学习状态 | 6379 |
-| Qdrant | 向量存储（经验库、知识 RAG） | 6333 |
-| FastAPI | HTTP API 服务 | 8000 |
-| 飞书 Bot | WebSocket 长连接（主交付通道） | — |
+### 6.1 服务清单
+
+| 组件 | 用途 | 管理方式 | 必需 |
+|------|------|----------|------|
+| PostgreSQL 16 | 执行轨迹、反馈存储 | systemd 系统服务（`postgresql@16-main`） | 是 |
+| Redis 7 | 缓存、检查点、幂等键、工具学习状态 | 可选部署 | 否（优雅降级） |
+| Qdrant | 向量存储（经验库、知识 RAG） | 可选部署 | 否（fallback 内存） |
+| 飞书 Bot | WebSocket 长连接 | systemd 用户服务（`mulagent-feishu`） | 是 |
+| FastAPI | HTTP API 服务 | 手动/Docker | 按需 |
+| CLI | TUI / Headless / 单次执行 | `mulagent` 命令 | 按需 |
+
+### 6.2 统一管理脚本
+
+所有服务通过 `scripts/setup.sh` 统一管理：
+
+```bash
+./scripts/setup.sh                 # 检查服务 + 启动 CLI (TUI)
+./scripts/setup.sh --headless      # 检查服务 + 启动 CLI (Headless)
+./scripts/setup.sh -c "查天气"     # 检查服务 + 单次执行
+./scripts/setup.sh --status        # 查看所有服务状态
+./scripts/setup.sh --restart       # 重启飞书 Bot（代码更新后）
+./scripts/setup.sh --stop          # 停止飞书 Bot
+./scripts/setup.sh --logs [N]      # 查看 Bot 最近 N 行日志
+./scripts/setup.sh --infra         # 仅检查基础设施
+```
+
+### 6.3 systemd 服务
+
+飞书 Bot 作为用户级 systemd 服务自启动：
+
+```
+~/.config/systemd/user/mulagent-feishu.service
+```
+
+常用命令：
+```bash
+systemctl --user status mulagent-feishu    # 查看状态
+systemctl --user restart mulagent-feishu   # 重启（代码更新后）
+journalctl --user -u mulagent-feishu -f    # 实时日志
+```
 
 ---
 
@@ -239,14 +284,16 @@ score = success_rate + C × √(ln(total_trials) / tool_trials)
 
 ---
 
-## 8. 开发命令
+## 8. 开发与运维命令
+
+### 8.1 Make 命令
 
 ```bash
 make install          # 安装依赖
 make up               # 启动基础设施（Qdrant/Redis/PostgreSQL）
 make dev              # 启动 API 服务（热重载）
 make bot              # 启动飞书 Bot
-make test             # 运行全部测试
+make test             # 运行全部测试（197 个用例）
 make test-unit        # 仅单元测试
 make lint             # 代码检查（ruff）
 make format           # 代码格式化
@@ -254,6 +301,26 @@ make migrate          # 运行数据库迁移
 make health           # 检查服务健康状态
 make reload           # 热重载配置
 make clean            # 清理缓存
+```
+
+### 8.2 CLI 命令
+
+```bash
+mulagent                         # TUI 模式（Textual 富终端）
+mulagent --headless              # Headless REPL（纯文本）
+mulagent -c "帮我分析这段代码"     # 单次执行
+mulagent --model deepseek        # 指定模型
+mulagent --session <id>          # 恢复历史会话
+```
+
+CLI REPL 内置命令：`/new`（新会话）、`/resume <id>`（恢复）、`/model <id>`（切换模型）、`/sessions`（列表）、`/quit`。
+
+### 8.3 运维脚本
+
+```bash
+./scripts/setup.sh --status      # 一览所有服务状态
+./scripts/setup.sh --restart     # 代码更新后重启 Bot
+./scripts/setup.sh --logs 100    # 查看最近 100 行 Bot 日志
 ```
 
 ---
@@ -372,6 +439,10 @@ metadata:
 | 动态知识注入（70% 上下文预算） | 防止知识注入占满上下文窗口 |
 | 写操作幂等键 | Redis SET NX 防止重复执行 |
 | 每 3 轮保存检查点 | 平衡性能与恢复粒度 |
+| SessionManager 适配器层 | 飞书/CLI/API 共享会话存储，切换通道不丢上下文 |
+| CLI 使用全栈依赖（PG/Redis/Qdrant） | 与服务端行为一致，trace 和 checkpoint 完整可用 |
+| systemd 用户服务管理 Bot | 开机自启、崩溃自恢复、日志归档，比 nohup 可靠 |
+| Textual 作为可选依赖 | headless 模式零额外依赖，TUI 仅 `pip install mulagent[cli]` |
 
 ---
 
