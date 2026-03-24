@@ -235,20 +235,24 @@ score = success_rate + C × √(ln(total_trials) / tool_trials)
 | FastAPI | HTTP API 服务 | 手动/Docker | 按需 |
 | CLI | TUI / Headless / 单次执行 | `mulagent` 命令 | 按需 |
 
-### 6.2 统一管理脚本
+### 6.2 运维脚本（scripts/setup.sh）
 
-所有服务通过 `scripts/setup.sh` 统一管理：
+`scripts/setup.sh` 负责**基础设施运维**（检查/启停服务、查看日志）。默认模式附带启动 CLI，但核心职责是服务管理：
 
 ```bash
-./scripts/setup.sh                 # 检查服务 + 启动 CLI (TUI)
-./scripts/setup.sh --headless      # 检查服务 + 启动 CLI (Headless)
-./scripts/setup.sh -c "查天气"     # 检查服务 + 单次执行
+# 运维操作
 ./scripts/setup.sh --status        # 查看所有服务状态
 ./scripts/setup.sh --restart       # 重启飞书 Bot（代码更新后）
 ./scripts/setup.sh --stop          # 停止飞书 Bot
 ./scripts/setup.sh --logs [N]      # 查看 Bot 最近 N 行日志
-./scripts/setup.sh --infra         # 仅检查基础设施
+./scripts/setup.sh --infra         # 仅检查基础设施，不启动 CLI
+
+# 便捷启动（检查服务 → 自动修复 → 启动 CLI）
+./scripts/setup.sh                 # 检查服务 + 启动 TUI
+./scripts/setup.sh --headless      # 检查服务 + 启动 Headless
 ```
+
+> **与 `mulagent` 的区别**：`mulagent` 是纯用户交互入口（不管服务状态），`setup.sh` 是运维工具（确保服务就绪后可选启动 CLI）。日常使用直接 `mulagent`，首次部署或排障用 `setup.sh`。
 
 ### 6.3 systemd 服务
 
@@ -354,13 +358,7 @@ pip install -e ".[cli]"
 
 TUI 模式快捷键：**Ctrl+N** 新会话、**Ctrl+Q** 退出、**Esc** 聚焦输入框。聊天面板支持鼠标选择文本复制。
 
-### 8.3 运维脚本
-
-```bash
-./scripts/setup.sh --status      # 一览所有服务状态
-./scripts/setup.sh --restart     # 代码更新后重启 Bot
-./scripts/setup.sh --logs 100    # 查看最近 100 行 Bot 日志
-```
+> `mulagent` 不检查基础设施状态（LLM 无配置时会报错退出，PG/Redis/Qdrant 不可用时优雅降级）。首次部署请先用 `./scripts/setup.sh --infra` 确认服务就绪（见 6.2）。
 
 ---
 
@@ -490,7 +488,7 @@ metadata:
 
 ## 12. 变更日志
 
-### v0.6.0 — 上下文管理 + TUI 增强（当前）
+### v0.6.0 — 上下文管理 + TUI 增强 + 代码质量修复（当前）
 
 - TUI 聊天面板从 `RichLog` 迁移到 `TextArea(read_only=True)`，支持鼠标选择文本复制
 - 新增 `/modify` 命令：对话上下文增删改查（list/view/edit/del/clear/summary/compress）
@@ -498,6 +496,11 @@ metadata:
 - Headless 编辑：`/modify edit <n>` 打开 `$EDITOR`（默认 nano）
 - ConversationStore 新增 CRUD 方法：`list_turns`, `delete_turn`, `delete_turns_range`, `edit_turn`, `clear_turns`, `get_summary`
 - 新增 8 个上下文 CRUD 单元测试（共 205 个）
+- 修复 `setup.sh` 启动顺序：venv 检查提前到数据库迁移之前
+- 修复 `SessionManager._make_id()` 生成冗余 ID（去掉重复的 context_id 片段）
+- 统一 `_ensure_src_path()` 到 `cli/__init__.py`，消除三处重复定义
+- pyproject.toml 版本号同步为 0.6.0
+- 明确 `setup.sh`（运维）与 `mulagent`（用户交互）的职责边界
 
 ### v0.5.0 — CLI + 全局安装 + SessionManager
 

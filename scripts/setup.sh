@@ -188,6 +188,16 @@ echo -e "${CYAN}║       mul-agent  一键启动                ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════╝${NC}"
 echo ""
 
+# 0. Ensure venv & package (must be before DB migration)
+if [[ ! -f "$PYTHON" ]]; then
+    info "Creating virtual environment..."
+    python3 -m venv "$VENV_DIR"
+fi
+if ! "$PYTHON" -c "import cli.runner" &>/dev/null 2>&1; then
+    info "Installing mul-agent..."
+    "$PIP" install -e "$PROJECT_ROOT[cli]" --quiet
+fi
+
 # 1. Check PostgreSQL
 printf "  %-20s" "PostgreSQL:"
 if check_system_svc "$SVC_PG"; then
@@ -260,16 +270,6 @@ async def init():
 asyncio.run(init())
 " 2>/dev/null && ok "Database tables ready." || true
     fi
-fi
-
-# 6. Ensure venv & package
-if [[ ! -f "$PYTHON" ]]; then
-    info "Creating virtual environment..."
-    python3 -m venv "$VENV_DIR"
-fi
-if ! "$PYTHON" -c "import cli.runner" &>/dev/null 2>&1; then
-    info "Installing mul-agent..."
-    "$PIP" install -e "$PROJECT_ROOT[cli]" --quiet
 fi
 
 echo ""

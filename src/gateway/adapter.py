@@ -109,5 +109,5 @@ class SessionManager:
 
     @staticmethod
     def _make_id(user_id: str, context_id: str) -> str:
-        short_ctx = context_id[-8:] if len(context_id) > 8 else context_id
-        return f"{context_id}_{user_id}_{short_ctx}_{uuid.uuid4().hex[:6]}"
+        safe_uid = user_id[-12:] if len(user_id) > 12 else user_id
+        return f"_{safe_uid}_{context_id}_{uuid.uuid4().hex[:6]}"

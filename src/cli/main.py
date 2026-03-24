@@ -16,17 +16,12 @@ import asyncio
 import sys
 from pathlib import Path
 
-
-def _ensure_src_path() -> None:
-    """Add src/ to sys.path so internal imports resolve correctly."""
-    src_dir = str(Path(__file__).resolve().parent.parent)
-    if src_dir not in sys.path:
-        sys.path.insert(0, src_dir)
+from cli import ensure_src_path
 
 
 def _run_single(args) -> None:
     """Execute a single command and exit."""
-    _ensure_src_path()
+    ensure_src_path()
     from cli.runner import AgentRunner
 
     runner = AgentRunner(
@@ -79,7 +74,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    _ensure_src_path()
+    ensure_src_path()
 
     # Single-shot mode
     if args.command:

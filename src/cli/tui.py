@@ -12,7 +12,6 @@ Rich terminal interface with:
 from __future__ import annotations
 
 import asyncio
-import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -538,9 +537,8 @@ class MulAgentApp(App):
 
 def run_tui(args) -> None:
     """Launch the Textual TUI. Called from cli.main."""
-    src_dir = str(Path(__file__).resolve().parent.parent)
-    if src_dir not in sys.path:
-        sys.path.insert(0, src_dir)
+    from cli import ensure_src_path
+    ensure_src_path()
 
     from cli.runner import AgentRunner
 

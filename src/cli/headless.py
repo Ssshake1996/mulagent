@@ -297,10 +297,8 @@ def _handle_modify(runner, session_id: str, text: str) -> None:
 
 def run_headless(args) -> None:
     """Entry point called from cli.main."""
-    # Add src/ to path so internal imports work
-    src_dir = str(Path(__file__).resolve().parent.parent)
-    if src_dir not in sys.path:
-        sys.path.insert(0, src_dir)
+    from cli import ensure_src_path
+    ensure_src_path()
 
     from cli.runner import AgentRunner
 
