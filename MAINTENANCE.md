@@ -43,9 +43,10 @@ mul-agent/
 │   ├── main.py                    # FastAPI 入口
 │   ├── cli/                       # CLI 模块（v0.5.0 新增）
 │   │   ├── main.py                #   CLI 入口（mulagent 命令）
-│   │   ├── runner.py              #   AgentRunner（全栈任务执行器）
+│   │   ├── runner.py              #   AgentRunner（全栈任务执行器 + 状态输出）
 │   │   ├── tui.py                 #   Textual TUI（可选文本复制、编辑浮层）
-│   │   └── headless.py            #   Headless REPL（纯 stdin/stdout）
+│   │   ├── headless.py            #   Headless REPL（异步 Spinner + 进度回调）
+│   │   └── init_wizard.py         #   交互式初始化向导（mulagent init）
 │   ├── graph/                     # 核心编排层
 │   │   ├── orchestrator.py        #   入口：run_react()
 │   │   ├── react_orchestrator.py  #   ReAct 推理循环（核心）
@@ -106,7 +107,7 @@ mul-agent/
 ├── scripts/
 │   └── setup.sh                   # 统一管理脚本（服务状态/重启/日志/启动 CLI）
 ├── tests/
-│   ├── unit/                      # 单元测试（16 个文件，205 个用例）
+│   ├── unit/                      # 单元测试（16 个文件，212 个用例）
 │   ├── integration/               # 集成测试
 │   └── e2e/                       # 端到端测试
 ├── docker/docker-compose.yaml     # 容器化部署编排
@@ -488,7 +489,18 @@ metadata:
 
 ## 12. 变更日志
 
-### v0.6.0 — 上下文管理 + TUI 增强 + 代码质量修复（当前）
+### v0.7.0 — 初始化向导 + 启动状态 + 跨会话指令 + Spinner（当前）
+
+- 新增 `mulagent init`：交互式初始化向导，支持 5 种 LLM 提供商（通义千问/DeepSeek/OpenAI/Ollama/自定义）
+- `AgentRunner.print_status()`：启动时输出组件状态（LLM/PostgreSQL/Redis/Qdrant），带颜色标记 ✓/○
+- 跨会话持久化指令（persistent directives）：用户规则跨 session 生效
+  - ConversationStore 新增：`load_persistent_directives`, `add_persistent_directive`, `remove_persistent_directive`, `get_all_directives`
+  - TUI + Headless 新增 `/directives` 命令（list/add/del/clear）
+  - `AgentRunner.run()` 使用 `get_all_directives()` 自动合并持久+会话指令
+- Headless 异步 Spinner：LLM 思考时每 2 秒打印耗时，工具调用实时输出
+- 新增 7 个持久化指令单元测试（共 212 个）
+
+### v0.6.0 — 上下文管理 + TUI 增强 + 代码质量修复
 
 - TUI 聊天面板从 `RichLog` 迁移到 `TextArea(read_only=True)`，支持鼠标选择文本复制
 - 新增 `/modify` 命令：对话上下文增删改查（list/view/edit/del/clear/summary/compress）
