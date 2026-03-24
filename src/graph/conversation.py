@@ -118,6 +118,76 @@ class ConversationStore:
             conv["turns"] = conv["turns"][-50:]
         self._save(session_id, conv)
 
+    # ── Context CRUD (/modify support) ──────────────────────────
+
+    def list_turns(self, session_id: str) -> list[dict]:
+        """Return all turns with their indices."""
+        conv = self.load(session_id)
+        if conv is None:
+            return []
+        return conv.get("turns", [])
+
+    def delete_turn(self, session_id: str, index: int) -> bool:
+        """Delete a turn by index. Returns True on success."""
+        conv = self.load(session_id)
+        if conv is None:
+            return False
+        turns = conv.get("turns", [])
+        if index < 0 or index >= len(turns):
+            return False
+        turns.pop(index)
+        conv["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self._save(session_id, conv)
+        return True
+
+    def delete_turns_range(self, session_id: str, start: int, end: int) -> int:
+        """Delete turns in [start, end) range. Returns count deleted."""
+        conv = self.load(session_id)
+        if conv is None:
+            return 0
+        turns = conv.get("turns", [])
+        start = max(0, start)
+        end = min(len(turns), end)
+        if start >= end:
+            return 0
+        count = end - start
+        conv["turns"] = turns[:start] + turns[end:]
+        conv["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self._save(session_id, conv)
+        return count
+
+    def edit_turn(self, session_id: str, index: int, new_content: str) -> bool:
+        """Edit a turn's content by index. Returns True on success."""
+        conv = self.load(session_id)
+        if conv is None:
+            return False
+        turns = conv.get("turns", [])
+        if index < 0 or index >= len(turns):
+            return False
+        turns[index]["content"] = new_content
+        turns[index]["ts"] = datetime.now(timezone.utc).isoformat()
+        conv["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self._save(session_id, conv)
+        return True
+
+    def clear_turns(self, session_id: str) -> bool:
+        """Clear all turns (keep session metadata). Returns True on success."""
+        conv = self.load(session_id)
+        if conv is None:
+            return False
+        conv["turns"] = []
+        conv["summary"] = ""
+        conv["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self._save(session_id, conv)
+        return True
+
+    def get_summary(self, session_id: str) -> str:
+        """Get the stored conversation summary."""
+        conv = self.load(session_id)
+        if conv is None:
+            return ""
+        return conv.get("summary", "")
+
     def save_directives(self, session_id: str, directives: list[str]) -> None:
         """Update accumulated directives for the session."""
         conv = self.load(session_id)

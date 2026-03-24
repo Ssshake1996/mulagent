@@ -101,3 +101,71 @@ def test_list_sessions_no_empty(store):
     store.create("sess_empty", "user_h")
     sessions = store.list_sessions("user_h")
     assert len(sessions) == 0
+
+
+# ── Context CRUD (/modify support) ──────────────────────────
+
+def test_list_turns(store):
+    store.create("sess_lt", "u")
+    store.append_turn("sess_lt", "user", "hello")
+    store.append_turn("sess_lt", "assistant", "hi")
+    turns = store.list_turns("sess_lt")
+    assert len(turns) == 2
+    assert turns[0]["role"] == "user"
+
+
+def test_delete_turn(store):
+    store.create("sess_dt", "u")
+    store.append_turn("sess_dt", "user", "msg0")
+    store.append_turn("sess_dt", "assistant", "msg1")
+    store.append_turn("sess_dt", "user", "msg2")
+    assert store.delete_turn("sess_dt", 1)
+    turns = store.list_turns("sess_dt")
+    assert len(turns) == 2
+    assert turns[1]["content"] == "msg2"
+
+
+def test_delete_turn_out_of_range(store):
+    store.create("sess_dtor", "u")
+    store.append_turn("sess_dtor", "user", "msg0")
+    assert not store.delete_turn("sess_dtor", 5)
+    assert not store.delete_turn("sess_dtor", -1)
+
+
+def test_delete_turns_range(store):
+    store.create("sess_dr", "u")
+    for i in range(6):
+        store.append_turn("sess_dr", "user", f"msg{i}")
+    count = store.delete_turns_range("sess_dr", 1, 4)
+    assert count == 3
+    turns = store.list_turns("sess_dr")
+    assert len(turns) == 3
+    assert turns[0]["content"] == "msg0"
+    assert turns[1]["content"] == "msg4"
+
+
+def test_edit_turn(store):
+    store.create("sess_et", "u")
+    store.append_turn("sess_et", "user", "old content")
+    assert store.edit_turn("sess_et", 0, "new content")
+    turns = store.list_turns("sess_et")
+    assert turns[0]["content"] == "new content"
+
+
+def test_edit_turn_out_of_range(store):
+    store.create("sess_etor", "u")
+    assert not store.edit_turn("sess_etor", 0, "x")
+
+
+def test_clear_turns(store):
+    store.create("sess_ct", "u")
+    store.append_turn("sess_ct", "user", "hello")
+    store.append_turn("sess_ct", "assistant", "hi")
+    assert store.clear_turns("sess_ct")
+    turns = store.list_turns("sess_ct")
+    assert len(turns) == 0
+
+
+def test_get_summary_empty(store):
+    store.create("sess_gs", "u")
+    assert store.get_summary("sess_gs") == ""

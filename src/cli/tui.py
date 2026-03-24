@@ -1,10 +1,11 @@
 """Textual-based TUI for mul-agent.
 
 Rich terminal interface with:
-- Chat panel with Markdown rendering
+- Chat panel with text selection and copy (Ctrl+C)
 - Real-time tool progress display
 - Session sidebar
 - Model selector
+- Context management (/modify)
 - Keyboard shortcuts
 """
 
@@ -28,8 +29,8 @@ from textual.widgets import (
     Label,
     ListItem,
     ListView,
-    RichLog,
     Static,
+    TextArea,
 )
 
 
@@ -106,16 +107,18 @@ class MulAgentApp(App):
                 yield ListView(id="session-list")
                 yield Label(f"Model: {self.runner.current_model}", id="model-label")
             with Vertical(id="chat-area"):
-                yield RichLog(
+                yield TextArea(
+                    "",
                     id="chat-log",
-                    wrap=True,
-                    highlight=True,
-                    markup=True,
-                    max_lines=2000,
+                    read_only=True,
+                    show_line_numbers=False,
+                    soft_wrap=True,
+                    language=None,
+                    theme="css",
                 )
                 yield Static("", id="progress-bar")
         yield Input(
-            placeholder="Type a message... (Ctrl+N: new session, Ctrl+Q: quit)",
+            placeholder="Type a message... (Ctrl+N: new, Ctrl+Q: quit, select text to copy)",
             id="input-bar",
         )
         yield Static("", id="status")
@@ -144,8 +147,9 @@ class MulAgentApp(App):
             return
         if cmd in ("/help", "/h"):
             self._write_system(
-                "/new — 新会话 | /model <id> — 切换模型 | "
-                "/sessions — 会话列表 | /resume <id> — 恢复"
+                "/new -- new session  |  /model <id> -- switch model\n"
+                "/sessions -- list    |  /resume <id> -- resume\n"
+                "/modify -- context management (list/view/del/edit/clear/summary/compress)"
             )
             return
         if cmd == "/sessions":
@@ -157,6 +161,9 @@ class MulAgentApp(App):
         if cmd.startswith("/model"):
             self._handle_model(text)
             return
+        if cmd.startswith("/modify"):
+            self._handle_modify(text)
+            return
         if cmd.startswith("/"):
             self._write_system(f"Unknown command: {cmd}")
             return
@@ -166,7 +173,7 @@ class MulAgentApp(App):
             return
 
         # Execute task
-        self._write_chat("You", text, style="bold cyan")
+        self._write_chat("You", text)
         self._busy = True
         self._run_task(text)
 
@@ -193,14 +200,12 @@ class MulAgentApp(App):
             output = result.get("final_output", "(no output)")
             elapsed = time.monotonic() - t0
             status = result.get("status", "?")
-            self._write_chat(
-                "Assistant", output, style="bold green"
-            )
-            self._write_system(f"{status} · {elapsed:.1f}s")
+            self._write_chat("Assistant", output)
+            self._write_system(f"{status} | {elapsed:.1f}s")
         except asyncio.CancelledError:
             self._write_system("Task cancelled.")
         except Exception as e:
-            self._write_chat("Error", str(e), style="bold red")
+            self._write_chat("Error", str(e))
         finally:
             progress.update("")
             self._busy = False
@@ -211,8 +216,7 @@ class MulAgentApp(App):
 
     def action_new_session(self) -> None:
         self.session_id = self.runner.session_manager.new_session("cli_user", "cli")
-        chat = self.query_one("#chat-log", RichLog)
-        chat.clear()
+        self._clear_chat()
         self._write_system(f"New session: {self.session_id[-16:]}")
         self._refresh_sessions()
         self._update_status()
@@ -220,18 +224,151 @@ class MulAgentApp(App):
     def action_focus_input(self) -> None:
         self.query_one("#input-bar", Input).focus()
 
+    # ── /modify handler ───────────────────────────────────────
+
+    def _handle_modify(self, text: str) -> None:
+        """Handle /modify subcommands for context CRUD."""
+        parts = text.split(maxsplit=2)
+        sub = parts[1].lower() if len(parts) > 1 else "list"
+        conv_store = self.runner.session_manager.conv_store
+
+        if sub == "list":
+            turns = conv_store.list_turns(self.session_id)
+            if not turns:
+                self._write_system("(no turns in context)")
+                return
+            lines = [f"Context: {len(turns)} turns"]
+            for i, t in enumerate(turns):
+                role = "U" if t["role"] == "user" else "A"
+                preview = t["content"][:60].replace("\n", " ")
+                ts = t.get("ts", "")[:16]
+                lines.append(f"  [{i}] {role}: {preview}...  ({ts})")
+            summary = conv_store.get_summary(self.session_id)
+            if summary:
+                lines.append(f"\n  Summary: {summary[:100]}...")
+            self._write_system("\n".join(lines))
+
+        elif sub == "view":
+            if len(parts) < 3:
+                self._write_system("usage: /modify view <index>")
+                return
+            try:
+                idx = int(parts[2])
+            except ValueError:
+                self._write_system("index must be a number")
+                return
+            turns = conv_store.list_turns(self.session_id)
+            if idx < 0 or idx >= len(turns):
+                self._write_system(f"index out of range (0-{len(turns)-1})")
+                return
+            t = turns[idx]
+            role = "User" if t["role"] == "user" else "Assistant"
+            self._write_system(f"[{idx}] {role} ({t.get('ts', '')[:19]}):\n{t['content']}")
+
+        elif sub in ("del", "delete", "rm"):
+            if len(parts) < 3:
+                self._write_system("usage: /modify del <index|start-end>")
+                return
+            arg = parts[2].strip()
+            if "-" in arg and not arg.startswith("-"):
+                # Range delete: /modify del 2-5
+                try:
+                    start, end = arg.split("-", 1)
+                    start_i, end_i = int(start), int(end)
+                    count = conv_store.delete_turns_range(self.session_id, start_i, end_i + 1)
+                    self._write_system(f"Deleted {count} turns [{start_i}-{end_i}]")
+                except ValueError:
+                    self._write_system("invalid range, use: /modify del 2-5")
+            else:
+                try:
+                    idx = int(arg)
+                except ValueError:
+                    self._write_system("index must be a number")
+                    return
+                if conv_store.delete_turn(self.session_id, idx):
+                    self._write_system(f"Deleted turn [{idx}]")
+                else:
+                    self._write_system(f"Failed to delete turn [{idx}]")
+
+        elif sub == "edit":
+            # /modify edit <index> <new content>
+            rest = text.split(maxsplit=3)
+            if len(rest) < 4:
+                self._write_system("usage: /modify edit <index> <new_content>")
+                return
+            try:
+                idx = int(rest[2])
+            except ValueError:
+                self._write_system("index must be a number")
+                return
+            new_content = rest[3]
+            if conv_store.edit_turn(self.session_id, idx, new_content):
+                self._write_system(f"Updated turn [{idx}]")
+            else:
+                self._write_system(f"Failed to edit turn [{idx}]")
+
+        elif sub == "clear":
+            if conv_store.clear_turns(self.session_id):
+                self._write_system("Context cleared (all turns removed)")
+            else:
+                self._write_system("Failed to clear context")
+
+        elif sub == "summary":
+            summary = conv_store.get_summary(self.session_id)
+            if summary:
+                self._write_system(f"Summary: {summary}")
+            else:
+                self._write_system("(no summary yet, auto-generated after 20+ turns)")
+
+        elif sub == "compress":
+            self._write_system("Compressing context...")
+            self._run_compress()
+
+        else:
+            self._write_system(
+                "/modify subcommands:\n"
+                "  list           -- show all turns with indices\n"
+                "  view <n>       -- view full content of turn n\n"
+                "  del <n>        -- delete turn n\n"
+                "  del <n-m>      -- delete turns n through m\n"
+                "  edit <n> <txt> -- replace turn n content\n"
+                "  clear          -- remove all turns\n"
+                "  summary        -- show conversation summary\n"
+                "  compress       -- force summarize old turns"
+            )
+
+    @work(exclusive=True, thread=True)
+    def _run_compress(self) -> None:
+        """Run async summarization in a worker."""
+        import asyncio as _aio
+        conv_store = self.runner.session_manager.conv_store
+        llm = self.runner._react_params.get("llm")
+        try:
+            loop = _aio.new_event_loop()
+            loop.run_until_complete(
+                conv_store.maybe_summarize(self.session_id, llm=llm)
+            )
+            loop.close()
+            self.call_from_thread(self._write_system, "Context compressed")
+        except Exception as e:
+            self.call_from_thread(self._write_system, f"Compress failed: {e}")
+
     # ── Helpers ───────────────────────────────────────────────
 
-    def _write_chat(self, role: str, content: str, style: str = "") -> None:
-        chat = self.query_one("#chat-log", RichLog)
-        if style:
-            chat.write(f"[{style}]{role}:[/] {content}")
-        else:
-            chat.write(f"{role}: {content}")
+    def _write_chat(self, role: str, content: str) -> None:
+        chat = self.query_one("#chat-log", TextArea)
+        line = f"\n{role}:\n{content}\n"
+        chat.insert(line, chat.document.end)
+        chat.scroll_end(animate=False)
 
     def _write_system(self, msg: str) -> None:
-        chat = self.query_one("#chat-log", RichLog)
-        chat.write(f"[dim]{msg}[/]")
+        chat = self.query_one("#chat-log", TextArea)
+        chat.insert(f"\n--- {msg}\n", chat.document.end)
+        chat.scroll_end(animate=False)
+
+    def _clear_chat(self) -> None:
+        chat = self.query_one("#chat-log", TextArea)
+        chat.clear()
 
     def _update_status(self) -> None:
         try:
@@ -261,11 +398,11 @@ class MulAgentApp(App):
         if not sessions:
             self._write_system("(no sessions)")
             return
+        lines = []
         for s in sessions:
             sid = s["session_id"][-16:]
-            self._write_system(
-                f"  {sid}  {s['turns']}轮  {s.get('preview', '')[:40]}"
-            )
+            lines.append(f"  {sid}  {s['turns']} turns  {s.get('preview', '')[:40]}")
+        self._write_system("\n".join(lines))
 
     def _handle_resume(self, text: str) -> None:
         parts = text.split(maxsplit=1)
@@ -280,10 +417,9 @@ class MulAgentApp(App):
             self.runner.session_manager.resume_session(
                 "cli_user", "cli", self.session_id
             )
-            chat = self.query_one("#chat-log", RichLog)
-            chat.clear()
+            self._clear_chat()
             self._write_system(
-                f"Resumed: {self.session_id[-16:]}  {matched['turns']}轮"
+                f"Resumed: {self.session_id[-16:]}  {matched['turns']} turns"
             )
             self._refresh_sessions()
             self._update_status()
@@ -295,13 +431,15 @@ class MulAgentApp(App):
         if len(parts) < 2:
             models = self.runner.llm_manager.list_models()
             cur = self.runner.current_model
+            lines = []
             for m in models:
                 marker = " *" if m["id"] == cur else ""
-                self._write_system(f"  {m['id']}: {m['model']}{marker}")
+                lines.append(f"  {m['id']}: {m['model']}{marker}")
+            self._write_system("\n".join(lines))
             return
         model_id = parts[1].strip()
         if self.runner.switch_model(model_id):
-            self._write_system(f"Model → {model_id}")
+            self._write_system(f"Model -> {model_id}")
             self._update_status()
             try:
                 self.query_one("#model-label", Label).update(

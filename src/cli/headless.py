@@ -20,7 +20,8 @@ def _print_banner(session_id: str, model: str) -> None:
     print("=" * 60)
     print("  /new   新会话  |  /model <id>  切换模型")
     print("  /sessions      |  /resume <id> 恢复会话")
-    print("  /help          |  /quit        退出")
+    print("  /modify        |  /quit        退出")
+    print("  /modify help   -- context CRUD (list/view/del/edit/clear)")
     print("-" * 60)
     print()
 
@@ -121,6 +122,10 @@ async def _repl(runner, session_id: str) -> None:
                 print(f"  unknown model: {model_id}")
             continue
 
+        if cmd.startswith("/modify"):
+            _handle_modify(runner, session_id, line)
+            continue
+
         if cmd.startswith("/"):
             print(f"  unknown command: {cmd}")
             continue
@@ -137,6 +142,129 @@ async def _repl(runner, session_id: str) -> None:
             print("\n  [cancelled]\n")
         except Exception as e:
             print(f"\n  [error: {e}]\n")
+
+
+def _handle_modify(runner, session_id: str, text: str) -> None:
+    """Handle /modify subcommands for context CRUD."""
+    parts = text.split(maxsplit=2)
+    sub = parts[1].lower() if len(parts) > 1 else "list"
+    conv_store = runner.session_manager.conv_store
+
+    if sub == "list":
+        turns = conv_store.list_turns(session_id)
+        if not turns:
+            print("  (no turns in context)")
+            return
+        print(f"  Context: {len(turns)} turns")
+        for i, t in enumerate(turns):
+            role = "U" if t["role"] == "user" else "A"
+            preview = t["content"][:60].replace("\n", " ")
+            ts = t.get("ts", "")[:16]
+            print(f"  [{i}] {role}: {preview}...  ({ts})")
+        summary = conv_store.get_summary(session_id)
+        if summary:
+            print(f"\n  Summary: {summary[:100]}...")
+        print()
+
+    elif sub == "view":
+        if len(parts) < 3:
+            print("  usage: /modify view <index>")
+            return
+        try:
+            idx = int(parts[2])
+        except ValueError:
+            print("  index must be a number")
+            return
+        turns = conv_store.list_turns(session_id)
+        if idx < 0 or idx >= len(turns):
+            print(f"  index out of range (0-{len(turns)-1})")
+            return
+        t = turns[idx]
+        role = "User" if t["role"] == "user" else "Assistant"
+        print(f"  [{idx}] {role} ({t.get('ts', '')[:19]}):")
+        print(f"  {t['content']}")
+        print()
+
+    elif sub in ("del", "delete", "rm"):
+        if len(parts) < 3:
+            print("  usage: /modify del <index|start-end>")
+            return
+        arg = parts[2].strip()
+        if "-" in arg and not arg.startswith("-"):
+            try:
+                start, end = arg.split("-", 1)
+                start_i, end_i = int(start), int(end)
+                count = conv_store.delete_turns_range(session_id, start_i, end_i + 1)
+                print(f"  Deleted {count} turns [{start_i}-{end_i}]")
+            except ValueError:
+                print("  invalid range, use: /modify del 2-5")
+        else:
+            try:
+                idx = int(arg)
+            except ValueError:
+                print("  index must be a number")
+                return
+            if conv_store.delete_turn(session_id, idx):
+                print(f"  Deleted turn [{idx}]")
+            else:
+                print(f"  Failed to delete turn [{idx}]")
+        print()
+
+    elif sub == "edit":
+        rest = text.split(maxsplit=3)
+        if len(rest) < 4:
+            print("  usage: /modify edit <index> <new_content>")
+            return
+        try:
+            idx = int(rest[2])
+        except ValueError:
+            print("  index must be a number")
+            return
+        new_content = rest[3]
+        if conv_store.edit_turn(session_id, idx, new_content):
+            print(f"  Updated turn [{idx}]")
+        else:
+            print(f"  Failed to edit turn [{idx}]")
+        print()
+
+    elif sub == "clear":
+        if conv_store.clear_turns(session_id):
+            print("  Context cleared (all turns removed)")
+        else:
+            print("  Failed to clear context")
+        print()
+
+    elif sub == "summary":
+        summary = conv_store.get_summary(session_id)
+        if summary:
+            print(f"  Summary: {summary}")
+        else:
+            print("  (no summary yet, auto-generated after 20+ turns)")
+        print()
+
+    elif sub == "compress":
+        llm = runner._react_params.get("llm")
+        try:
+            import asyncio as _aio
+            _aio.get_event_loop().run_until_complete(
+                conv_store.maybe_summarize(session_id, llm=llm)
+            )
+            print("  Context compressed")
+        except Exception as e:
+            print(f"  Compress failed: {e}")
+        print()
+
+    else:
+        print("  /modify subcommands:")
+        print("    list           -- show all turns with indices")
+        print("    view <n>       -- view full content of turn n")
+        print("    del <n>        -- delete turn n")
+        print("    del <n-m>      -- delete turns n through m")
+        print("    edit <n> <txt> -- replace turn n content")
+        print("    clear          -- remove all turns")
+        print("    summary        -- show conversation summary")
+        print("    compress       -- force summarize old turns")
+        print()
 
 
 def run_headless(args) -> None:
