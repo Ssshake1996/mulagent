@@ -828,9 +828,9 @@ async def _process_task(
             await _evolve_experience(text, result)
 
         # ── Conversation summarization (#1) ──
-        if _conv_store:
+        if _session_mgr:
             try:
-                await _conv_store.maybe_summarize(session_id, llm=_react_params.get("llm"))
+                await _session_mgr.conv_store.maybe_summarize(session_id, llm=_react_params.get("llm"))
             except Exception as e:
                 logger.debug("Summarization skipped: %s", e)
 
