@@ -188,6 +188,62 @@ class ConversationStore:
             return ""
         return conv.get("summary", "")
 
+    # ── Persistent directives (cross-session) ────────────────────
+
+    def _persistent_directives_path(self, user_id: str) -> Path:
+        """Path to user-level persistent directives file."""
+        return self._user_dir(user_id) / "_directives.json"
+
+    def load_persistent_directives(self, user_id: str) -> list[str]:
+        """Load user-level directives that persist across sessions."""
+        path = self._persistent_directives_path(user_id)
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text())
+            return data.get("directives", [])
+        except Exception:
+            return []
+
+    def save_persistent_directives(self, user_id: str, directives: list[str]) -> None:
+        """Save user-level persistent directives."""
+        path = self._persistent_directives_path(user_id)
+        path.write_text(json.dumps(
+            {"directives": directives},
+            ensure_ascii=False, indent=2,
+        ))
+
+    def add_persistent_directive(self, user_id: str, directive: str) -> bool:
+        """Add a single directive to persistent store. Returns False if duplicate."""
+        existing = self.load_persistent_directives(user_id)
+        if directive in existing:
+            return False
+        existing.append(directive)
+        self.save_persistent_directives(user_id, existing)
+        return True
+
+    def remove_persistent_directive(self, user_id: str, index: int) -> bool:
+        """Remove a persistent directive by index."""
+        existing = self.load_persistent_directives(user_id)
+        if index < 0 or index >= len(existing):
+            return False
+        existing.pop(index)
+        self.save_persistent_directives(user_id, existing)
+        return True
+
+    def get_all_directives(self, session_id: str, user_id: str = "") -> list[str]:
+        """Get merged directives: persistent (user-level) + session-level."""
+        persistent = self.load_persistent_directives(user_id) if user_id else []
+        session_dirs = self.get_directives(session_id)
+        # Merge, persistent first, deduplicate
+        seen = set()
+        merged = []
+        for d in persistent + session_dirs:
+            if d not in seen:
+                merged.append(d)
+                seen.add(d)
+        return merged
+
     def save_directives(self, session_id: str, directives: list[str]) -> None:
         """Update accumulated directives for the session."""
         conv = self.load(session_id)

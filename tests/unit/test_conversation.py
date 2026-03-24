@@ -169,3 +169,57 @@ def test_clear_turns(store):
 def test_get_summary_empty(store):
     store.create("sess_gs", "u")
     assert store.get_summary("sess_gs") == ""
+
+
+# ── Persistent directives (cross-session) ────────────────────
+
+def test_persistent_directives_empty(store):
+    assert store.load_persistent_directives("user_pd") == []
+
+
+def test_add_persistent_directive(store):
+    assert store.add_persistent_directive("user_pd", "never delete without asking")
+    assert store.add_persistent_directive("user_pd", "use Chinese")
+    directives = store.load_persistent_directives("user_pd")
+    assert len(directives) == 2
+    assert "never delete without asking" in directives
+
+
+def test_add_persistent_directive_dedup(store):
+    store.add_persistent_directive("user_dup", "rule1")
+    assert not store.add_persistent_directive("user_dup", "rule1")
+    assert len(store.load_persistent_directives("user_dup")) == 1
+
+
+def test_remove_persistent_directive(store):
+    store.add_persistent_directive("user_rm", "a")
+    store.add_persistent_directive("user_rm", "b")
+    store.add_persistent_directive("user_rm", "c")
+    assert store.remove_persistent_directive("user_rm", 1)
+    directives = store.load_persistent_directives("user_rm")
+    assert directives == ["a", "c"]
+
+
+def test_remove_persistent_directive_invalid(store):
+    assert not store.remove_persistent_directive("user_no", 0)
+
+
+def test_get_all_directives_merged(store):
+    # Persistent
+    store.add_persistent_directive("user_merged", "persistent rule")
+    # Session
+    store.create("sess_merged", "user_merged")
+    store.save_directives("sess_merged", ["session rule"])
+    # Merge
+    all_dirs = store.get_all_directives("sess_merged", user_id="user_merged")
+    assert len(all_dirs) == 2
+    assert all_dirs[0] == "persistent rule"  # persistent first
+    assert all_dirs[1] == "session rule"
+
+
+def test_get_all_directives_dedup(store):
+    store.add_persistent_directive("user_dd", "same rule")
+    store.create("sess_dd", "user_dd")
+    store.save_directives("sess_dd", ["same rule"])
+    all_dirs = store.get_all_directives("sess_dd", user_id="user_dd")
+    assert len(all_dirs) == 1

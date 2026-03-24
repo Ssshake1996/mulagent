@@ -26,12 +26,50 @@ def _print_banner(session_id: str, model: str) -> None:
     print()
 
 
-async def _on_progress(round_num: int, action: str, detail: str) -> None:
-    """Print progress inline."""
-    if action == "tool_call" and detail:
-        print(f"  [{round_num}] tool: {detail}")
-    elif action == "thinking":
-        print(f"  [{round_num}] thinking...")
+class _Spinner:
+    """Async spinner that prints elapsed time while waiting for LLM."""
+
+    def __init__(self):
+        self._last_update = 0.0
+        self._start = 0.0
+        self._task: asyncio.Task | None = None
+
+    def start(self) -> None:
+        self._start = time.monotonic()
+        self._last_update = self._start
+        self._task = asyncio.create_task(self._tick())
+
+    def stop(self) -> None:
+        if self._task and not self._task.done():
+            self._task.cancel()
+
+    def touch(self) -> None:
+        self._last_update = time.monotonic()
+
+    def _elapsed(self) -> int:
+        return int(time.monotonic() - self._start)
+
+    async def _tick(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(2)
+                # Only print if no progress update in last 2s
+                if time.monotonic() - self._last_update >= 1.8:
+                    print(f"  thinking... ({self._elapsed()}s)", flush=True)
+        except asyncio.CancelledError:
+            pass
+
+
+def _make_progress_callback(spinner: _Spinner):
+    """Create a progress callback that updates the spinner."""
+    async def _on_progress(round_num: int, action: str, detail: str) -> None:
+        spinner.touch()
+        if action == "tool_call" and detail:
+            print(f"  [{round_num}] tool: {detail}", flush=True)
+        elif action == "thinking":
+            elapsed = spinner._elapsed()
+            print(f"  [{round_num}] thinking... ({elapsed}s)", flush=True)
+    return _on_progress
 
 
 async def _repl(runner, session_id: str) -> None:
@@ -126,21 +164,30 @@ async def _repl(runner, session_id: str) -> None:
             _handle_modify(runner, session_id, line)
             continue
 
+        if cmd.startswith("/directives"):
+            _handle_directives(runner, line)
+            continue
+
         if cmd.startswith("/"):
             print(f"  unknown command: {cmd}")
             continue
 
         # ── Execute task ──────────────────────────────────────
-        t0 = time.monotonic()
+        spinner = _Spinner()
+        on_progress = _make_progress_callback(spinner)
+        spinner.start()
         try:
-            result = await runner.run(line, session_id, on_progress=_on_progress)
+            result = await runner.run(line, session_id, on_progress=on_progress)
+            spinner.stop()
             output = result.get("final_output", "(no output)")
-            elapsed = time.monotonic() - t0
+            elapsed = time.monotonic() - spinner._start
             print(f"\n{output}")
             print(f"\n  [{result.get('status', '?')} · {elapsed:.1f}s]\n")
         except KeyboardInterrupt:
+            spinner.stop()
             print("\n  [cancelled]\n")
         except Exception as e:
+            spinner.stop()
             print(f"\n  [error: {e}]\n")
 
 
@@ -295,6 +342,63 @@ def _handle_modify(runner, session_id: str, text: str) -> None:
         print()
 
 
+def _handle_directives(runner, text: str) -> None:
+    """Handle /directives command for persistent cross-session rules."""
+    parts = text.split(maxsplit=2)
+    sub = parts[1].lower() if len(parts) > 1 else "list"
+    conv_store = runner.session_manager.conv_store
+    user_id = "cli_user"
+
+    if sub == "list":
+        persistent = conv_store.load_persistent_directives(user_id)
+        if not persistent:
+            print("  (no persistent directives)")
+        else:
+            print(f"  Persistent directives ({len(persistent)}):")
+            for i, d in enumerate(persistent):
+                print(f"  [{i}] {d}")
+        print()
+
+    elif sub == "add":
+        if len(parts) < 3:
+            print("  usage: /directives add <rule>")
+            return
+        directive = parts[2].strip()
+        if conv_store.add_persistent_directive(user_id, directive):
+            print(f"  Added: {directive}")
+        else:
+            print("  Already exists")
+        print()
+
+    elif sub in ("del", "rm"):
+        if len(parts) < 3:
+            print("  usage: /directives del <index>")
+            return
+        try:
+            idx = int(parts[2])
+        except ValueError:
+            print("  index must be a number")
+            return
+        if conv_store.remove_persistent_directive(user_id, idx):
+            print(f"  Removed directive [{idx}]")
+        else:
+            print(f"  Invalid index [{idx}]")
+        print()
+
+    elif sub == "clear":
+        conv_store.save_persistent_directives(user_id, [])
+        print("  All persistent directives cleared")
+        print()
+
+    else:
+        print("  /directives subcommands:")
+        print("    list          -- show persistent directives")
+        print("    add <rule>    -- add a persistent directive")
+        print("    del <n>       -- remove directive by index")
+        print("    clear         -- remove all persistent directives")
+        print()
+
+
 def run_headless(args) -> None:
     """Entry point called from cli.main."""
     from cli import ensure_src_path
@@ -315,4 +419,5 @@ def run_headless(args) -> None:
     )
     runner.session_manager.ensure_conversation(session_id, user_id)
 
+    runner.print_status()
     asyncio.run(_repl(runner, session_id))

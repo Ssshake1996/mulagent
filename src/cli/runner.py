@@ -96,6 +96,7 @@ class AgentRunner:
 
         # ── 5. Qdrant (remote preferred, in-memory fallback) ─────
         self._qdrant = get_qdrant_client()  # remote first, falls back to in-memory
+        self._qdrant_remote = not getattr(self._qdrant, '_local', True)
         collection = self._settings.qdrant.collection_name
         ensure_collection(self._qdrant, collection)
 
@@ -118,8 +119,43 @@ class AgentRunner:
             self._model_id,
             "ok" if self._db_session_factory else "off",
             "ok" if self._redis_ok else "off",
-            "remote" if not getattr(self._qdrant, '_local', True) else "in-memory",
+            "remote" if self._qdrant_remote else "in-memory",
         )
+
+    def print_status(self) -> None:
+        """Print colorful component status summary to stdout."""
+        G = "\033[32m"   # green
+        Y = "\033[33m"   # yellow
+        D = "\033[2m"    # dim
+        N = "\033[0m"    # reset
+
+        model_cfg = self._settings.llm.get_model(self._model_id)
+        model_desc = model_cfg.model if model_cfg else "?"
+
+        lines = []
+        # LLM — always required
+        lines.append(f"  LLM          {G}✓{N}  {self._model_id} ({model_desc})")
+
+        # PostgreSQL
+        if self._db_session_factory:
+            db_host = self._settings.database.url.split("@")[-1].split("/")[0]
+            lines.append(f"  PostgreSQL   {G}✓{N}  {db_host}")
+        else:
+            lines.append(f"  PostgreSQL   {Y}○{N}  {D}not available — traces disabled{N}")
+
+        # Redis
+        if self._redis_ok:
+            lines.append(f"  Redis        {G}✓{N}  {self._settings.redis.url}")
+        else:
+            lines.append(f"  Redis        {Y}○{N}  {D}not available — checkpoint disabled{N}")
+
+        # Qdrant
+        if self._qdrant_remote:
+            lines.append(f"  Qdrant       {G}✓{N}  {self._settings.qdrant.url}")
+        else:
+            lines.append(f"  Qdrant       {Y}○{N}  {D}in-memory fallback{N}")
+
+        print("\n".join(lines))
 
     # ── Public API ────────────────────────────────────────────────
 
@@ -138,7 +174,7 @@ class AgentRunner:
 
         # Load multi-turn context
         history = conv.get_history_for_prompt(session_id, max_turns=10)
-        directives = conv.get_directives(session_id) or None
+        directives = conv.get_all_directives(session_id, user_id="cli_user") or None
         conv.append_turn(session_id, "user", user_input)
 
         result = await run_react(

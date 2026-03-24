@@ -72,6 +72,13 @@ def main() -> None:
         default=None,
         help="Resume an existing session by ID",
     )
+    # Handle "mulagent init" before argparse
+    if len(sys.argv) > 1 and sys.argv[1] == "init":
+        ensure_src_path()
+        from cli.init_wizard import run_init
+        run_init()
+        return
+
     args = parser.parse_args()
 
     ensure_src_path()

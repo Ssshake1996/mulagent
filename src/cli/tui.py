@@ -232,6 +232,9 @@ class MulAgentApp(App):
         if cmd.startswith("/modify"):
             self._handle_modify(text)
             return
+        if cmd.startswith("/directives"):
+            self._handle_directives(text)
+            return
         if cmd.startswith("/"):
             self._write_system(f"Unknown command: {cmd}")
             return
@@ -435,6 +438,62 @@ class MulAgentApp(App):
         except Exception as e:
             self.call_from_thread(self._write_system, f"Compress failed: {e}")
 
+    # ── /directives handler ─────────────────────────────────────
+
+    def _handle_directives(self, text: str) -> None:
+        """Handle /directives for persistent cross-session rules."""
+        parts = text.split(maxsplit=2)
+        sub = parts[1].lower() if len(parts) > 1 else "list"
+        conv_store = self.runner.session_manager.conv_store
+        user_id = "cli_user"
+
+        if sub == "list":
+            persistent = conv_store.load_persistent_directives(user_id)
+            if not persistent:
+                self._write_system("(no persistent directives)")
+            else:
+                lines = [f"Persistent directives ({len(persistent)}):"]
+                for i, d in enumerate(persistent):
+                    lines.append(f"  [{i}] {d}")
+                self._write_system("\n".join(lines))
+
+        elif sub == "add":
+            if len(parts) < 3:
+                self._write_system("usage: /directives add <rule>")
+                return
+            directive = parts[2].strip()
+            if conv_store.add_persistent_directive(user_id, directive):
+                self._write_system(f"Added: {directive}")
+            else:
+                self._write_system("Already exists")
+
+        elif sub in ("del", "rm"):
+            if len(parts) < 3:
+                self._write_system("usage: /directives del <index>")
+                return
+            try:
+                idx = int(parts[2])
+            except ValueError:
+                self._write_system("index must be a number")
+                return
+            if conv_store.remove_persistent_directive(user_id, idx):
+                self._write_system(f"Removed directive [{idx}]")
+            else:
+                self._write_system(f"Invalid index [{idx}]")
+
+        elif sub == "clear":
+            conv_store.save_persistent_directives(user_id, [])
+            self._write_system("All persistent directives cleared")
+
+        else:
+            self._write_system(
+                "/directives subcommands:\n"
+                "  list          -- show persistent directives\n"
+                "  add <rule>    -- add (persists across sessions)\n"
+                "  del <n>       -- remove by index\n"
+                "  clear         -- remove all"
+            )
+
     # ── Helpers ───────────────────────────────────────────────
 
     def _write_chat(self, role: str, content: str) -> None:
@@ -555,5 +614,7 @@ def run_tui(args) -> None:
     )
     runner.session_manager.ensure_conversation(session_id, user_id)
 
+    runner.print_status()
+    print()
     app = MulAgentApp(runner, session_id)
     app.run()
