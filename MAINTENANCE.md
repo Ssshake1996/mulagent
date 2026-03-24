@@ -44,13 +44,13 @@ mul-agent/
 │   ├── cli/                       # CLI 模块（v0.5.0 新增）
 │   │   ├── main.py                #   CLI 入口（mulagent 命令）
 │   │   ├── runner.py              #   AgentRunner（全栈任务执行器）
-│   │   ├── tui.py                 #   Textual TUI（聊天面板、会话侧栏）
+│   │   ├── tui.py                 #   Textual TUI（可选文本复制、编辑浮层）
 │   │   └── headless.py            #   Headless REPL（纯 stdin/stdout）
 │   ├── graph/                     # 核心编排层
 │   │   ├── orchestrator.py        #   入口：run_react()
 │   │   ├── react_orchestrator.py  #   ReAct 推理循环（核心）
 │   │   ├── memory.py              #   三层工作记忆
-│   │   ├── conversation.py        #   多轮对话管理 + 实体提取
+│   │   ├── conversation.py        #   多轮对话管理 + 实体提取 + 上下文 CRUD
 │   │   └── checkpoint.py          #   Redis 断点续作
 │   ├── tools/                     # 工具层（17 个工具）
 │   │   ├── registry.py            #   工具注册表
@@ -76,7 +76,7 @@ mul-agent/
 │   │   ├── routes.py              #   HTTP API 路由
 │   │   └── streaming.py           #   SSE 流式输出
 │   ├── common/                    # 基础设施
-│   │   ├── config.py              #   配置加载（pydantic-settings）
+│   │   ├── config.py              #   配置加载 + PROJECT_ROOT 解析
 │   │   ├── llm.py                 #   多模型 LLM 管理
 │   │   ├── vector.py              #   Qdrant 向量 + 三级 Embedding
 │   │   ├── observability.py       #   Prometheus 指标 + 分布式追踪
@@ -106,7 +106,7 @@ mul-agent/
 ├── scripts/
 │   └── setup.sh                   # 统一管理脚本（服务状态/重启/日志/启动 CLI）
 ├── tests/
-│   ├── unit/                      # 单元测试（14 个文件，197 个用例）
+│   ├── unit/                      # 单元测试（16 个文件，205 个用例）
 │   ├── integration/               # 集成测试
 │   └── e2e/                       # 端到端测试
 ├── docker/docker-compose.yaml     # 容器化部署编排
@@ -293,7 +293,7 @@ make install          # 安装依赖
 make up               # 启动基础设施（Qdrant/Redis/PostgreSQL）
 make dev              # 启动 API 服务（热重载）
 make bot              # 启动飞书 Bot
-make test             # 运行全部测试（197 个用例）
+make test             # 运行全部测试（205 个用例）
 make test-unit        # 仅单元测试
 make lint             # 代码检查（ruff）
 make format           # 代码格式化
@@ -306,14 +306,53 @@ make clean            # 清理缓存
 ### 8.2 CLI 命令
 
 ```bash
-mulagent                         # TUI 模式（Textual 富终端）
+mulagent                         # TUI 模式（Textual 富终端，支持文本选择复制）
 mulagent --headless              # Headless REPL（纯文本）
 mulagent -c "帮我分析这段代码"     # 单次执行
 mulagent --model deepseek        # 指定模型
 mulagent --session <id>          # 恢复历史会话
 ```
 
-CLI REPL 内置命令：`/new`（新会话）、`/resume <id>`（恢复）、`/model <id>`（切换模型）、`/sessions`（列表）、`/quit`。
+**全局安装**（任意目录可用）：
+```bash
+# 方式 1：符号链接（推荐，开发环境）
+ln -s $(pwd)/.venv/bin/mulagent ~/.local/bin/mulagent
+
+# 方式 2：pip install（新环境部署）
+pip install -e ".[cli]"
+```
+
+路径解析策略（`_find_project_root()`）：
+1. `MULAGENT_ROOT` 环境变量（显式指定）
+2. 从 CWD 向上查找 `config/settings.yaml`
+3. 从源码文件位置向上查找（editable install）
+4. `~/.mulagent/`（全局安装兜底）
+
+**REPL 内置命令**：
+
+| 命令 | 说明 |
+|------|------|
+| `/new` | 新建会话 |
+| `/resume <id>` | 恢复历史会话 |
+| `/model <id>` | 切换模型 |
+| `/sessions` | 会话列表 |
+| `/modify` | 上下文管理（见下方） |
+| `/quit` | 退出 |
+
+**`/modify` 上下文管理命令**：
+
+| 命令 | 说明 |
+|------|------|
+| `/modify` 或 `/modify list` | 列出所有对话轮次（带索引和预览） |
+| `/modify view <n>` | 查看第 n 轮完整内容 |
+| `/modify edit <n>` | 交互式编辑第 n 轮（TUI: 编辑浮层 Ctrl+S/Esc；Headless: 打开 $EDITOR） |
+| `/modify del <n>` | 删除第 n 轮 |
+| `/modify del <n-m>` | 批量删除第 n~m 轮 |
+| `/modify clear` | 清空所有对话 |
+| `/modify summary` | 查看对话摘要 |
+| `/modify compress` | 强制压缩旧对话为摘要 |
+
+TUI 模式快捷键：**Ctrl+N** 新会话、**Ctrl+Q** 退出、**Esc** 聚焦输入框。聊天面板支持鼠标选择文本复制。
 
 ### 8.3 运维脚本
 
@@ -443,12 +482,34 @@ metadata:
 | CLI 使用全栈依赖（PG/Redis/Qdrant） | 与服务端行为一致，trace 和 checkpoint 完整可用 |
 | systemd 用户服务管理 Bot | 开机自启、崩溃自恢复、日志归档，比 nohup 可靠 |
 | Textual 作为可选依赖 | headless 模式零额外依赖，TUI 仅 `pip install mulagent[cli]` |
+| TextArea 替代 RichLog | 牺牲富文本标记换取原生文本选择复制能力 |
+| /modify 上下文 CRUD | 用户可精细控制对话上下文，手动压缩降低 token 消耗 |
+| PROJECT_ROOT 统一解析 | 环境变量→CWD→源码→~/.mulagent 四级降级，支持全局安装 |
 
 ---
 
 ## 12. 变更日志
 
-### v0.4.0 — Skill 自动加载机制（当前）
+### v0.6.0 — 上下文管理 + TUI 增强（当前）
+
+- TUI 聊天面板从 `RichLog` 迁移到 `TextArea(read_only=True)`，支持鼠标选择文本复制
+- 新增 `/modify` 命令：对话上下文增删改查（list/view/edit/del/clear/summary/compress）
+- TUI 编辑浮层（`EditScreen`）：`/modify edit <n>` 弹出全屏编辑器，Ctrl+S 保存 / Esc 取消
+- Headless 编辑：`/modify edit <n>` 打开 `$EDITOR`（默认 nano）
+- ConversationStore 新增 CRUD 方法：`list_turns`, `delete_turn`, `delete_turns_range`, `edit_turn`, `clear_turns`, `get_summary`
+- 新增 8 个上下文 CRUD 单元测试（共 205 个）
+
+### v0.5.0 — CLI + 全局安装 + SessionManager
+
+- 新增 `src/cli/` 包：TUI (Textual)、Headless REPL、单次执行三种模式
+- 新增 `src/gateway/adapter.py`：SessionManager + ProgressEvent 协议
+- 新增 `scripts/setup.sh`：统一服务管理
+- `common/config.py` 引入 `_find_project_root()`，支持 `mulagent` 全局安装（任意目录运行）
+- 统一 6 个模块的路径引用为 `PROJECT_ROOT`/`CONFIG_DIR`/`DATA_DIR`
+- pyproject.toml 新增 `mulagent` 入口点和 `[cli]` 可选依赖
+- 重构 `feishu_bot.py` 使用 SessionManager
+
+### v0.4.0 — Skill 自动加载机制
 
 - 新增 `src/tools/skill_loader.py`：扫描 Skill 目录，解析 SKILL.md frontmatter，自动注册为 delegate 角色
 - 新增 `config/skills/` 目录：放入或符号链接 Skill 即可注册，零代码
