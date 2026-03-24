@@ -22,6 +22,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
+from textual.screen import ModalScreen
 from textual.widgets import (
     Footer,
     Header,
@@ -32,6 +33,74 @@ from textual.widgets import (
     Static,
     TextArea,
 )
+
+
+# ── Edit overlay screen ──────────────────────────────────────────
+
+class EditScreen(ModalScreen[str | None]):
+    """Modal editor for a conversation turn. Ctrl+S saves, Esc cancels."""
+
+    CSS = """
+    EditScreen {
+        align: center middle;
+    }
+    #edit-container {
+        width: 90%;
+        height: 80%;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    #edit-title {
+        text-style: bold;
+        padding: 0 0 1 0;
+    }
+    #edit-area {
+        height: 1fr;
+    }
+    #edit-hint {
+        height: 1;
+        color: $text-muted;
+        padding: 1 0 0 0;
+    }
+    """
+
+    BINDINGS = [
+        Binding("ctrl+s", "save", "Save", show=True),
+        Binding("escape", "cancel", "Cancel", show=True),
+    ]
+
+    def __init__(self, index: int, role: str, content: str, **kwargs):
+        super().__init__(**kwargs)
+        self._index = index
+        self._role = role
+        self._content = content
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="edit-container"):
+            yield Label(
+                f"Editing turn [{self._index}] ({self._role})",
+                id="edit-title",
+            )
+            yield TextArea(
+                self._content,
+                id="edit-area",
+                soft_wrap=True,
+                show_line_numbers=True,
+                language=None,
+                theme="css",
+            )
+            yield Label("Ctrl+S: save  |  Esc: cancel", id="edit-hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#edit-area", TextArea).focus()
+
+    def action_save(self) -> None:
+        text = self.query_one("#edit-area", TextArea).text
+        self.dismiss(text)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 # ── TUI App ──────────────────────────────────────────────────────
@@ -291,21 +360,35 @@ class MulAgentApp(App):
                     self._write_system(f"Failed to delete turn [{idx}]")
 
         elif sub == "edit":
-            # /modify edit <index> <new content>
-            rest = text.split(maxsplit=3)
-            if len(rest) < 4:
-                self._write_system("usage: /modify edit <index> <new_content>")
+            # /modify edit <n> — open interactive editor overlay
+            if len(parts) < 3:
+                self._write_system("usage: /modify edit <index>")
                 return
             try:
-                idx = int(rest[2])
+                idx = int(parts[2])
             except ValueError:
                 self._write_system("index must be a number")
                 return
-            new_content = rest[3]
-            if conv_store.edit_turn(self.session_id, idx, new_content):
-                self._write_system(f"Updated turn [{idx}]")
-            else:
-                self._write_system(f"Failed to edit turn [{idx}]")
+            turns = conv_store.list_turns(self.session_id)
+            if idx < 0 or idx >= len(turns):
+                self._write_system(f"index out of range (0-{len(turns)-1})")
+                return
+            t = turns[idx]
+            role = "User" if t["role"] == "user" else "Assistant"
+
+            def _on_edit_done(result: str | None) -> None:
+                if result is None:
+                    self._write_system("Edit cancelled")
+                    return
+                if conv_store.edit_turn(self.session_id, idx, result):
+                    self._write_system(f"Updated turn [{idx}] ({len(result)} chars)")
+                else:
+                    self._write_system(f"Failed to save turn [{idx}]")
+
+            self.push_screen(
+                EditScreen(idx, role, t["content"]),
+                callback=_on_edit_done,
+            )
 
         elif sub == "clear":
             if conv_store.clear_turns(self.session_id):
@@ -331,7 +414,7 @@ class MulAgentApp(App):
                 "  view <n>       -- view full content of turn n\n"
                 "  del <n>        -- delete turn n\n"
                 "  del <n-m>      -- delete turns n through m\n"
-                "  edit <n> <txt> -- replace turn n content\n"
+                "  edit <n>       -- open editor for turn n (Ctrl+S save, Esc cancel)\n"
                 "  clear          -- remove all turns\n"
                 "  summary        -- show conversation summary\n"
                 "  compress       -- force summarize old turns"

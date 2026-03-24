@@ -211,20 +211,48 @@ def _handle_modify(runner, session_id: str, text: str) -> None:
         print()
 
     elif sub == "edit":
-        rest = text.split(maxsplit=3)
-        if len(rest) < 4:
-            print("  usage: /modify edit <index> <new_content>")
+        if len(parts) < 3:
+            print("  usage: /modify edit <index>")
             return
         try:
-            idx = int(rest[2])
+            idx = int(parts[2])
         except ValueError:
             print("  index must be a number")
             return
-        new_content = rest[3]
-        if conv_store.edit_turn(session_id, idx, new_content):
-            print(f"  Updated turn [{idx}]")
-        else:
-            print(f"  Failed to edit turn [{idx}]")
+        turns = conv_store.list_turns(session_id)
+        if idx < 0 or idx >= len(turns):
+            print(f"  index out of range (0-{len(turns)-1})")
+            return
+        t = turns[idx]
+        role = "User" if t["role"] == "user" else "Assistant"
+        # Open in $EDITOR if available, otherwise multi-line input
+        import os
+        import subprocess
+        import tempfile
+        editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "nano"
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".md", prefix=f"turn{idx}_", delete=False
+            ) as f:
+                f.write(t["content"])
+                tmp_path = f.name
+            print(f"  Opening [{idx}] {role} in {editor}...")
+            subprocess.run([editor, tmp_path], check=True)
+            new_content = open(tmp_path).read()
+            os.unlink(tmp_path)
+            if new_content != t["content"]:
+                if conv_store.edit_turn(session_id, idx, new_content):
+                    print(f"  Updated turn [{idx}] ({len(new_content)} chars)")
+                else:
+                    print(f"  Failed to save turn [{idx}]")
+            else:
+                print("  No changes")
+        except FileNotFoundError:
+            os.unlink(tmp_path) if os.path.exists(tmp_path) else None
+            print(f"  Editor '{editor}' not found. Set $EDITOR env var.")
+        except subprocess.CalledProcessError:
+            os.unlink(tmp_path) if os.path.exists(tmp_path) else None
+            print("  Editor exited with error, changes discarded")
         print()
 
     elif sub == "clear":
@@ -260,7 +288,7 @@ def _handle_modify(runner, session_id: str, text: str) -> None:
         print("    view <n>       -- view full content of turn n")
         print("    del <n>        -- delete turn n")
         print("    del <n-m>      -- delete turns n through m")
-        print("    edit <n> <txt> -- replace turn n content")
+        print("    edit <n>       -- open $EDITOR to edit turn n")
         print("    clear          -- remove all turns")
         print("    summary        -- show conversation summary")
         print("    compress       -- force summarize old turns")
