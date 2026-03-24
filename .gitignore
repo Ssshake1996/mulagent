@@ -20,6 +20,9 @@ env/
 # Sensitive config (use settings.yaml.example as template)
 config/settings.yaml
 
+# Local skill symlinks (machine-specific paths)
+config/skills/
+
 # OS
 .DS_Store
 Thumbs.db
