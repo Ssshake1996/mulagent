@@ -32,7 +32,8 @@ _docker_available: bool | None = None
 _image_pulled: bool = False
 
 # Persistent workspace directory (per-session)
-_WORKSPACE_BASE = Path(__file__).parent.parent.parent / "data" / "workspaces"
+from common.config import DATA_DIR
+_WORKSPACE_BASE = DATA_DIR / "workspaces"
 
 
 async def is_docker_available() -> bool:

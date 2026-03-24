@@ -25,7 +25,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_DIR = Path(__file__).parent.parent.parent / "config"
+from common.config import CONFIG_DIR as _CONFIG_DIR
+
 _KNOWLEDGE_DIR = _CONFIG_DIR / "knowledge"
 
 # In-memory index: chunk_id → chunk text (for retrieval without re-reading files)

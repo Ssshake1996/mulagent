@@ -35,7 +35,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "conversations"
+from common.config import DATA_DIR
+_DATA_DIR = DATA_DIR / "conversations"
 
 
 class ConversationStore:

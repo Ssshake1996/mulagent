@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # Cache for loaded role configs and knowledge bases
 _role_configs: dict[str, dict] | None = None
 _knowledge_cache: dict[str, str] = {}
-_CONFIG_DIR = Path(__file__).parent.parent.parent / "config"
+from common.config import CONFIG_DIR as _CONFIG_DIR
 
 
 def _load_roles() -> dict[str, dict]:

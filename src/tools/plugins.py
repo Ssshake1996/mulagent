@@ -51,7 +51,8 @@ from tools.base import ToolDef
 
 logger = logging.getLogger(__name__)
 
-_PLUGIN_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "tools.yaml"
+from common.config import CONFIG_DIR
+_PLUGIN_CONFIG_PATH = CONFIG_DIR / "tools.yaml"
 
 # Regex to match ${ENV_VAR} patterns
 _ENV_VAR_RE = re.compile(r"\$\{(\w+)\}")

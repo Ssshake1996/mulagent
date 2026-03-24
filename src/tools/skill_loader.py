@@ -28,8 +28,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_PROJECT_ROOT = Path(__file__).parent.parent.parent
-_LOCAL_SKILLS_DIR = _PROJECT_ROOT / "config" / "skills"
+from common.config import PROJECT_ROOT, CONFIG_DIR
+_LOCAL_SKILLS_DIR = CONFIG_DIR / "skills"
 
 # Default tools given to skill-based roles
 _DEFAULT_SKILL_TOOLS = [

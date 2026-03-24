@@ -10,7 +10,49 @@ import yaml
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
-CONFIG_DIR = Path(__file__).resolve().parent.parent.parent / "config"
+def _find_project_root() -> Path:
+    """Locate the mul-agent project root directory.
+
+    Resolution order:
+    1. MULAGENT_ROOT env var (explicit override)
+    2. Walk up from CWD looking for config/settings.yaml
+    3. Walk up from this source file (works for editable installs & dev)
+    4. ~/.mulagent (user-level fallback for global pip install)
+    """
+    import os
+
+    # 1. Explicit env var
+    env_root = os.environ.get("MULAGENT_ROOT")
+    if env_root:
+        p = Path(env_root).resolve()
+        if (p / "config").is_dir():
+            return p
+
+    # 2. Walk up from CWD
+    cwd = Path.cwd()
+    for parent in [cwd, *cwd.parents]:
+        if (parent / "config" / "settings.yaml").exists():
+            return parent
+        if parent == parent.parent:
+            break
+
+    # 3. Walk up from source file (editable install / dev)
+    src_root = Path(__file__).resolve().parent.parent.parent
+    if (src_root / "config").is_dir():
+        return src_root
+
+    # 4. User-level fallback
+    user_dir = Path.home() / ".mulagent"
+    if (user_dir / "config").is_dir():
+        return user_dir
+
+    # Last resort: source tree
+    return src_root
+
+
+PROJECT_ROOT = _find_project_root()
+CONFIG_DIR = PROJECT_ROOT / "config"
+DATA_DIR = PROJECT_ROOT / "data"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
