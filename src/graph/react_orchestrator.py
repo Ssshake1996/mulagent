@@ -128,6 +128,48 @@ NEVER repeat the same tool call with identical arguments — it will fail again.
 """
 
 
+# ── Task-type aware timeout ────────────────────────────────────────
+
+_TASK_TIMEOUT_RULES: list[tuple[list[str], int, str]] = [
+    # (keywords, timeout_seconds, category)
+    (["写作", "写一篇", "撰写", "write an essay", "write a report", "write article",
+      "写报告", "写文章", "长文", "blog post", "论文", "paper"], 600, "writing"),
+    (["翻译", "translate", "全文翻译", "翻译成"], 480, "translation"),
+    (["代码", "code", "实现", "implement", "重构", "refactor", "开发",
+      "develop", "编程", "programming", "写一个程序"], 480, "coding"),
+    (["分析", "analyze", "analysis", "调研", "research", "深度分析",
+      "对比", "compare", "评测", "benchmark"], 420, "analysis"),
+    (["搜索", "search", "查一下", "查询", "look up", "find"], 180, "search"),
+    (["总结", "summarize", "摘要", "summary", "概括"], 180, "summary"),
+]
+
+
+def estimate_timeout(user_input: str, default: int = 300) -> int:
+    """Estimate appropriate timeout based on task type and input length.
+
+    Longer tasks (writing, coding) get more time; short queries get less.
+    """
+    text = user_input.lower()
+    for keywords, timeout, _category in _TASK_TIMEOUT_RULES:
+        if any(kw in text for kw in keywords):
+            # Longer input → likely more complex, add buffer
+            length_bonus = min(120, len(user_input) // 100 * 30)
+            return timeout + length_bonus
+    # Fallback: scale by input length
+    if len(user_input) > 500:
+        return max(default, 420)
+    return default
+
+
+def classify_task_type(user_input: str) -> str:
+    """Return the task category for display purposes."""
+    text = user_input.lower()
+    for keywords, _timeout, category in _TASK_TIMEOUT_RULES:
+        if any(kw in text for kw in keywords):
+            return category
+    return "general"
+
+
 def _build_system_prompt(
     tool_descriptions: str,
     memory: WorkingMemory,

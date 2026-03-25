@@ -26,13 +26,28 @@ def _print_banner(session_id: str, model: str) -> None:
     print()
 
 
+import shutil
+
+
+def _term_width() -> int:
+    """Get terminal width, defaulting to 80."""
+    try:
+        return shutil.get_terminal_size().columns
+    except Exception:
+        return 80
+
+
 class _Spinner:
-    """Async spinner that prints elapsed time while waiting for LLM."""
+    """Async spinner with single-line in-place progress updates."""
 
     def __init__(self):
         self._last_update = 0.0
         self._start = 0.0
         self._task: asyncio.Task | None = None
+        self._is_tty = sys.stdout.isatty()
+        self._last_line_len = 0
+        self._task_type = "general"
+        self._timeout = 0
 
     def start(self) -> None:
         self._start = time.monotonic()
@@ -42,6 +57,10 @@ class _Spinner:
     def stop(self) -> None:
         if self._task and not self._task.done():
             self._task.cancel()
+        # Clear the progress line
+        if self._is_tty and self._last_line_len > 0:
+            self._clear_line()
+            print(flush=True)
 
     def touch(self) -> None:
         self._last_update = time.monotonic()
@@ -49,26 +68,61 @@ class _Spinner:
     def _elapsed(self) -> int:
         return int(time.monotonic() - self._start)
 
+    def _clear_line(self) -> None:
+        """Clear the current line using carriage return."""
+        if self._is_tty:
+            print(f"\r{' ' * self._last_line_len}\r", end="", flush=True)
+
+    def write_progress(self, msg: str) -> None:
+        """Write a progress message in-place (single line overwrite)."""
+        width = _term_width() - 2
+        # Truncate if too long
+        if len(msg) > width:
+            msg = msg[:width - 3] + "..."
+        if self._is_tty:
+            self._clear_line()
+            print(f"\r{msg}", end="", flush=True)
+            self._last_line_len = len(msg)
+        else:
+            # Non-TTY: fall back to newline-based output
+            print(f"  {msg}", flush=True)
+
     async def _tick(self) -> None:
+        frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        idx = 0
         try:
             while True:
-                await asyncio.sleep(2)
-                # Only print if no progress update in last 2s
-                if time.monotonic() - self._last_update >= 1.8:
-                    print(f"  thinking... ({self._elapsed()}s)", flush=True)
+                await asyncio.sleep(1)
+                if time.monotonic() - self._last_update >= 1.5:
+                    elapsed = self._elapsed()
+                    frame = frames[idx % len(frames)]
+                    timeout_hint = ""
+                    if self._timeout > 0:
+                        remaining = max(0, self._timeout - elapsed)
+                        timeout_hint = f"  timeout: {remaining}s"
+                    self.write_progress(
+                        f"  {frame} thinking... {elapsed}s  [{self._task_type}]{timeout_hint}"
+                    )
+                    idx += 1
         except asyncio.CancelledError:
             pass
 
 
 def _make_progress_callback(spinner: _Spinner):
-    """Create a progress callback that updates the spinner."""
+    """Create a progress callback with single-line in-place updates."""
     async def _on_progress(round_num: int, action: str, detail: str) -> None:
         spinner.touch()
+        elapsed = spinner._elapsed()
         if action == "tool_call" and detail:
-            print(f"  [{round_num}] tool: {detail}", flush=True)
+            # Truncate long tool details
+            short_detail = detail if len(detail) <= 60 else detail[:57] + "..."
+            spinner.write_progress(
+                f"  ▶ [{round_num}] {short_detail}  ({elapsed}s)"
+            )
         elif action == "thinking":
-            elapsed = spinner._elapsed()
-            print(f"  [{round_num}] thinking... ({elapsed}s)", flush=True)
+            spinner.write_progress(
+                f"  ◆ [{round_num}] thinking... ({elapsed}s)"
+            )
     return _on_progress
 
 
@@ -173,16 +227,28 @@ async def _repl(runner, session_id: str) -> None:
             continue
 
         # ── Execute task ──────────────────────────────────────
+        from graph.react_orchestrator import classify_task_type, estimate_timeout
+        from common.config import get_settings
+
+        task_type = classify_task_type(line)
+        react_cfg = get_settings().react
+        task_timeout = estimate_timeout(line, default=react_cfg.timeout)
+
         spinner = _Spinner()
+        spinner._task_type = task_type
+        spinner._timeout = task_timeout
         on_progress = _make_progress_callback(spinner)
         spinner.start()
+        spinner.write_progress(
+            f"  ◆ [{task_type}] timeout={task_timeout}s  starting..."
+        )
         try:
             result = await runner.run(line, session_id, on_progress=on_progress)
             spinner.stop()
             output = result.get("final_output", "(no output)")
             elapsed = time.monotonic() - spinner._start
             print(f"\n{output}")
-            print(f"\n  [{result.get('status', '?')} · {elapsed:.1f}s]\n")
+            print(f"\n  [{result.get('status', '?')} · {elapsed:.1f}s · {task_type}]\n")
         except KeyboardInterrupt:
             spinner.stop()
             print("\n  [cancelled]\n")

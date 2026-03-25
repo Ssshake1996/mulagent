@@ -43,11 +43,14 @@ async def run_react(
 
     from common.config import get_settings
     from tools.registry import get_default_tools
-    from graph.react_orchestrator import react_loop
+    from graph.react_orchestrator import react_loop, estimate_timeout
 
     tool_registry = get_default_tools()
     tools = tool_registry.as_dict()
     react_cfg = get_settings().react
+
+    # Dynamic timeout: explicit > task-type estimate > config default
+    effective_timeout = timeout or estimate_timeout(user_input, default=react_cfg.timeout)
 
     deps = {
         "qdrant": qdrant,
@@ -62,7 +65,7 @@ async def run_react(
             llm=llm,
             deps=deps,
             max_rounds=react_cfg.max_rounds,
-            timeout=timeout or react_cfg.timeout,
+            timeout=effective_timeout,
             tool_timeout=react_cfg.tool_timeout,
             max_parallel_tools=react_cfg.max_parallel_tools,
             max_conversation_pairs=react_cfg.max_conversation_pairs,

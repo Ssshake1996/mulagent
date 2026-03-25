@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from graph.react_orchestrator import (
     react_loop, _force_conclude_fallback, _brief_args,
     classify_tool_error, ToolErrorKind,
+    estimate_timeout, classify_task_type,
 )
 from graph.memory import WorkingMemory, Fact
 
@@ -244,3 +245,45 @@ async def test_run_react_no_llm():
     from graph.orchestrator import run_react
     result = await run_react(user_input="write hello world", llm=None)
     assert result["status"] == "failed"
+
+
+# ── Task-type timeout estimation ──
+
+def test_estimate_timeout_writing():
+    """Writing tasks should get ~600s timeout."""
+    t = estimate_timeout("请帮我写一篇关于AI的文章")
+    assert t >= 600
+
+def test_estimate_timeout_search():
+    """Search tasks should get shorter timeout."""
+    t = estimate_timeout("搜索一下今天天气")
+    assert t <= 300
+
+def test_estimate_timeout_coding():
+    """Coding tasks should get ~480s timeout."""
+    t = estimate_timeout("帮我实现一个排序算法")
+    assert t >= 480
+
+def test_estimate_timeout_general():
+    """Unrecognized tasks use default."""
+    t = estimate_timeout("你好", default=300)
+    assert t == 300
+
+def test_estimate_timeout_long_input():
+    """Long input gets extra buffer."""
+    short_t = estimate_timeout("搜索天气")
+    long_input = "搜索天气" + " 额外信息" * 100
+    long_t = estimate_timeout(long_input)
+    assert long_t > short_t
+
+def test_classify_task_type_writing():
+    assert classify_task_type("写一篇报告") == "writing"
+
+def test_classify_task_type_coding():
+    assert classify_task_type("implement a REST API") == "coding"
+
+def test_classify_task_type_search():
+    assert classify_task_type("帮我搜索一下") == "search"
+
+def test_classify_task_type_general():
+    assert classify_task_type("你好") == "general"
