@@ -514,7 +514,21 @@ metadata:
 
 ## 12. 变更日志
 
-### v0.10.0 — Windows 一键安装 + 跨平台兼容（当前）
+### v0.11.0 — TUI 命令自动补全 + 编辑器 UX 改进（当前）
+
+- 命令自动补全（Codex 风格）：
+  - 输入 `/` 时自动弹出命令列表，显示所有可用命令及说明
+  - 支持实时过滤：随着输入内容缩小候选范围
+  - 上/下箭头键在候选列表中导航，Tab 或 Enter 确认选择
+  - Esc 关闭弹窗，继续输入自动隐藏
+  - 覆盖 17 个命令：`/new`、`/help`、`/sessions`、`/resume`、`/model`、`/modify *`、`/directives *`、`/quit`
+  - 需要参数的命令（如 `/resume`、`/modify edit`）自动追加空格
+- 编辑器保存 UX 改进（`/modify edit`）：
+  - 新增醒目的操作提示栏（高亮背景）："Ctrl+S = Save and close | Esc = Cancel without saving"
+  - 新增可点击按钮："💾 Save (Ctrl+S)" 和 "Cancel (Esc)"，降低键盘快捷键学习门槛
+- 使用 Textual `OptionList` 组件实现弹出菜单，兼容 v8.1.1+
+
+### v0.10.0 — Windows 一键安装 + 跨平台兼容
 
 - 新增 `scripts/setup.ps1`：Windows PowerShell 一键安装脚本
   - 自动创建 venv、安装依赖、检查基础设施端口、数据库迁移、启动 CLI

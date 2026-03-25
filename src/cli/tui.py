@@ -6,6 +6,7 @@ Rich terminal interface with:
 - Session sidebar
 - Model selector
 - Context management (/modify)
+- Command auto-completion (type / to see all commands)
 - Keyboard shortcuts
 """
 
@@ -16,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from textual import work
+from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -29,9 +30,33 @@ from textual.widgets import (
     Label,
     ListItem,
     ListView,
+    OptionList,
     Static,
     TextArea,
 )
+from textual.widgets.option_list import Option
+
+
+# ── Command definitions for auto-completion ────────────────────
+COMMANDS: list[tuple[str, str]] = [
+    ("/new", "Start a new session"),
+    ("/help", "Show available commands"),
+    ("/sessions", "List recent sessions"),
+    ("/resume", "Resume a session by ID fragment"),
+    ("/model", "Show or switch LLM model"),
+    ("/modify list", "Show all context turns"),
+    ("/modify view", "View a turn's full content"),
+    ("/modify edit", "Edit a turn (Ctrl+S save, Esc cancel)"),
+    ("/modify del", "Delete a turn or range"),
+    ("/modify clear", "Remove all turns"),
+    ("/modify summary", "Show conversation summary"),
+    ("/modify compress", "Force summarize old turns"),
+    ("/directives list", "Show persistent directives"),
+    ("/directives add", "Add a persistent directive"),
+    ("/directives del", "Remove a directive by index"),
+    ("/directives clear", "Remove all directives"),
+    ("/quit", "Exit the application"),
+]
 
 
 # ── Edit overlay screen ──────────────────────────────────────────
@@ -57,10 +82,19 @@ class EditScreen(ModalScreen[str | None]):
     #edit-area {
         height: 1fr;
     }
+    #edit-toolbar {
+        height: 3;
+        padding: 1 0 0 0;
+    }
+    .edit-btn {
+        margin: 0 2 0 0;
+    }
     #edit-hint {
         height: 1;
-        color: $text-muted;
-        padding: 1 0 0 0;
+        color: $text;
+        background: $primary;
+        padding: 0 2;
+        text-style: bold;
     }
     """
 
@@ -76,6 +110,7 @@ class EditScreen(ModalScreen[str | None]):
         self._content = content
 
     def compose(self) -> ComposeResult:
+        from textual.widgets import Button
         with Vertical(id="edit-container"):
             yield Label(
                 f"Editing turn [{self._index}] ({self._role})",
@@ -89,10 +124,22 @@ class EditScreen(ModalScreen[str | None]):
                 language=None,
                 theme="css",
             )
-            yield Label("Ctrl+S: save  |  Esc: cancel", id="edit-hint")
+            yield Label(
+                " Ctrl+S = Save and close  |  Esc = Cancel without saving ",
+                id="edit-hint",
+            )
+            with Horizontal(id="edit-toolbar"):
+                yield Button("💾 Save (Ctrl+S)", variant="success", id="btn-save", classes="edit-btn")
+                yield Button("Cancel (Esc)", variant="default", id="btn-cancel", classes="edit-btn")
 
     def on_mount(self) -> None:
         self.query_one("#edit-area", TextArea).focus()
+
+    def on_button_pressed(self, event) -> None:
+        if event.button.id == "btn-save":
+            self.action_save()
+        elif event.button.id == "btn-cancel":
+            self.action_cancel()
 
     def action_save(self) -> None:
         text = self.query_one("#edit-area", TextArea).text
@@ -142,8 +189,23 @@ class MulAgentApp(App):
         padding: 0 1;
         color: $warning;
     }
-    #input-bar {
+    #input-wrapper {
         dock: bottom;
+        height: auto;
+    }
+    #cmd-popup {
+        display: none;
+        height: auto;
+        max-height: 14;
+        padding: 0 1;
+        background: $surface;
+        border: solid $accent;
+        margin: 0 1;
+    }
+    #cmd-popup.visible {
+        display: block;
+    }
+    #input-bar {
         padding: 0 1;
     }
     #status {
@@ -166,6 +228,8 @@ class MulAgentApp(App):
         self.runner = runner
         self.session_id = session_id
         self._busy = False
+        self._popup_visible = False
+        self._filtered_cmds: list[tuple[str, str]] = []
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -185,10 +249,12 @@ class MulAgentApp(App):
                     theme="css",
                 )
                 yield Static("", id="progress-bar")
-        yield Input(
-            placeholder="Type a message... (Ctrl+N: new, Ctrl+Q: quit, select text to copy)",
-            id="input-bar",
-        )
+        with Vertical(id="input-wrapper"):
+            yield OptionList(id="cmd-popup")
+            yield Input(
+                placeholder="Type / for commands, or enter a message... (Ctrl+N: new, Ctrl+Q: quit)",
+                id="input-bar",
+            )
         yield Static("", id="status")
         yield Footer()
 
@@ -197,12 +263,116 @@ class MulAgentApp(App):
         self._update_status()
         self.query_one("#input-bar", Input).focus()
 
+    # ── Command auto-completion ────────────────────────────────
+
+    @on(Input.Changed, "#input-bar")
+    def _on_input_changed(self, event: Input.Changed) -> None:
+        """Show/hide command popup as user types."""
+        text = event.value
+        if text.startswith("/"):
+            query = text.lower()
+            self._filtered_cmds = [
+                (cmd, desc) for cmd, desc in COMMANDS
+                if cmd.startswith(query) or query in cmd
+            ]
+            if self._filtered_cmds:
+                self._show_popup(self._filtered_cmds)
+            else:
+                self._hide_popup()
+        else:
+            self._hide_popup()
+
+    def _show_popup(self, items: list[tuple[str, str]]) -> None:
+        """Display the command completion popup."""
+        popup = self.query_one("#cmd-popup", OptionList)
+        popup.clear_options()
+        for cmd, desc in items:
+            popup.add_option(Option(f"{cmd}  — {desc}", id=cmd))
+        popup.add_class("visible")
+        self._popup_visible = True
+        # Highlight first item
+        if len(items) > 0:
+            popup.highlighted = 0
+
+    def _hide_popup(self) -> None:
+        """Hide the command completion popup."""
+        popup = self.query_one("#cmd-popup", OptionList)
+        popup.remove_class("visible")
+        self._popup_visible = False
+
+    def _accept_completion(self) -> None:
+        """Accept the currently highlighted completion."""
+        popup = self.query_one("#cmd-popup", OptionList)
+        idx = popup.highlighted
+        if idx is not None and 0 <= idx < len(self._filtered_cmds):
+            cmd, _desc = self._filtered_cmds[idx]
+            inp = self.query_one("#input-bar", Input)
+            # Set the input to the completed command
+            # Add trailing space for commands that take arguments
+            needs_arg = cmd in (
+                "/resume", "/model",
+                "/modify view", "/modify edit", "/modify del",
+                "/directives add", "/directives del",
+            )
+            inp.value = cmd + (" " if needs_arg else "")
+            inp.cursor_position = len(inp.value)
+            self._hide_popup()
+            inp.focus()
+
+    @on(OptionList.OptionSelected, "#cmd-popup")
+    def _on_popup_selected(self, event: OptionList.OptionSelected) -> None:
+        """Handle click/enter selection in the popup."""
+        self._accept_completion()
+
+    def on_key(self, event) -> None:
+        """Intercept arrow keys and Tab/Enter for popup navigation."""
+        if not self._popup_visible:
+            return
+
+        popup = self.query_one("#cmd-popup", OptionList)
+
+        if event.key == "down":
+            event.prevent_default()
+            event.stop()
+            h = popup.highlighted
+            if h is None:
+                popup.highlighted = 0
+            elif h < len(self._filtered_cmds) - 1:
+                popup.highlighted = h + 1
+        elif event.key == "up":
+            event.prevent_default()
+            event.stop()
+            h = popup.highlighted
+            if h is not None and h > 0:
+                popup.highlighted = h - 1
+        elif event.key == "tab":
+            event.prevent_default()
+            event.stop()
+            self._accept_completion()
+        elif event.key == "escape":
+            event.prevent_default()
+            event.stop()
+            self._hide_popup()
+            self.query_one("#input-bar", Input).focus()
+
     # ── Input handling ────────────────────────────────────────
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         if not text:
             return
+        # If popup is visible and Enter is pressed, accept the completion instead
+        if self._popup_visible and text.startswith("/"):
+            popup = self.query_one("#cmd-popup", OptionList)
+            idx = popup.highlighted
+            if idx is not None and 0 <= idx < len(self._filtered_cmds):
+                cmd, _desc = self._filtered_cmds[idx]
+                # Only intercept if the input exactly matches a partial prefix
+                # (i.e., user hasn't typed a full command + args yet)
+                if text.lower() != cmd and cmd.startswith(text.lower()):
+                    self._accept_completion()
+                    return
+        self._hide_popup()
         event.input.clear()
 
         # Commands
