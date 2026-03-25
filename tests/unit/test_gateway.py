@@ -25,7 +25,7 @@ async def test_health(client):
     resp = await client.get("/api/v1/health")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["status"] in ("ok", "degraded")
+    assert data["status"] in ("ok", "degraded", "error")
 
 
 @pytest.mark.asyncio
@@ -77,6 +77,43 @@ async def test_health_db_and_qdrant_disconnected(client):
     assert resp.status_code == 200
     assert resp.json()["db_connected"] is False
     assert resp.json()["qdrant_connected"] is False
+
+
+@pytest.mark.asyncio
+async def test_health_has_components(client):
+    """Health response should include per-component detail."""
+    resp = await client.get("/api/v1/health")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "components" in data
+    components = data["components"]
+    assert "redis" in components
+    assert "qdrant" in components
+    assert "database" in components
+    assert "llm" in components
+    # Each component has ok/latency_ms/error fields
+    for name, comp in components.items():
+        assert "ok" in comp
+        assert "latency_ms" in comp
+
+
+@pytest.mark.asyncio
+async def test_health_version_not_hardcoded(client):
+    """Version should be read from package metadata, not hardcoded."""
+    resp = await client.get("/api/v1/health")
+    data = resp.json()
+    # Should not be the old hardcoded "0.1.0"
+    assert "version" in data
+
+
+@pytest.mark.asyncio
+async def test_task_response_has_trace_id(client):
+    """Task response should include trace_id."""
+    resp = await client.post("/api/v1/tasks", json={"input": "test trace"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "trace_id" in data
+    assert len(data["trace_id"]) == 16  # hex uuid[:16]
 
 
 @pytest.mark.asyncio

@@ -22,10 +22,20 @@ async def record_task_trace(
     final_output: str,
     status: str,
     subtasks: list[dict[str, Any]],
+    trace_id: str = "",
 ) -> TaskTrace:
     """Record a complete task execution trace."""
+    # Auto-detect trace_id from context if not provided
+    if not trace_id:
+        try:
+            from common.trace_context import get_trace_id
+            trace_id = get_trace_id()
+        except Exception:
+            pass
+
     task = TaskTrace(
         id=uuid.uuid4(),
+        trace_id=trace_id or None,
         session_id=session_id,
         user_input=user_input,
         intent_category=intent,

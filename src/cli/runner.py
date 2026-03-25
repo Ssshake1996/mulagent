@@ -170,6 +170,14 @@ class AgentRunner:
         Returns the same result dict as ``run_react()``:
             {"final_output": str, "status": str, "intent": str, ...}
         """
+        # Generate trace_id for this task
+        try:
+            from common.trace_context import trace_ctx
+            trace_id = trace_ctx.new_trace()
+            logger.info("CLI task started (trace=%s, session=%s)", trace_id, session_id)
+        except Exception:
+            pass
+
         conv = self._session_mgr.conv_store
 
         # Load multi-turn context

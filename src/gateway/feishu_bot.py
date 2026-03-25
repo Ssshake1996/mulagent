@@ -387,6 +387,14 @@ async def _run_task_react(user_input: str, session_id: str, tracker: ProgressTra
     Loads conversation history and accumulated directives from the session
     to enable multi-turn dialogue.
     """
+    # Generate trace_id for this task
+    try:
+        from common.trace_context import trace_ctx
+        trace_id = trace_ctx.new_trace()
+        logger.info("Feishu task started (trace=%s, session=%s)", trace_id, session_id)
+    except Exception:
+        pass
+
     conv = _session_mgr.conv_store if _session_mgr else None
 
     # Load conversation context

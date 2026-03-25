@@ -58,6 +58,11 @@ async def _task_event_generator(
     user_input: str, session_id: str, model_id: str | None,
 ) -> AsyncGenerator[dict, None]:
     """Generate SSE events as the ReAct loop executes."""
+    from common.trace_context import trace_ctx
+
+    trace_id = trace_ctx.new_trace()
+    logger.info("Stream task started (trace=%s, session=%s)", trace_id, session_id)
+
     # Resolve LLM
     llm = _llm
     if model_id and _llm_manager:
@@ -128,6 +133,7 @@ async def _task_event_generator(
         yield {
             "event": "result",
             "data": json.dumps({
+                "trace_id": trace_id,
                 "status": result.get("status", "unknown"),
                 "final_output": result.get("final_output", ""),
                 "intent": result.get("intent", "react"),

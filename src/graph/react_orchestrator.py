@@ -200,13 +200,21 @@ async def react_loop(
     deps = deps or {}
     memory = WorkingMemory()
 
-    # ── Observability: track task metrics ──
+    # ── Observability: track task metrics with trace_id ──
+    _trace_id = ""
+    try:
+        from common.trace_context import get_trace_id
+        _trace_id = get_trace_id()
+    except Exception:
+        pass
     try:
         from common.observability import metrics, tracer
         metrics.inc("task_starts_total")
         metrics.set_gauge("active_tasks", metrics.get_counter("task_starts_total") - metrics.get_counter("task_completions_total"))
     except Exception:
         pass
+    if _trace_id:
+        logger.info("react_loop start (trace=%s, sub_agent=%s)", _trace_id, is_sub_agent)
 
     # ── Step 0: Inherit parent directives (if sub-agent) ──
     if parent_directives:

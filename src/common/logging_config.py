@@ -42,8 +42,17 @@ class JSONFormatter(logging.Formatter):
         if record.exc_info and record.exc_info[0]:
             log_entry["exception"] = self.formatException(record.exc_info)
 
+        # Inject trace_id from context (always, if active)
+        try:
+            from common.trace_context import get_trace_id
+            tid = get_trace_id()
+            if tid:
+                log_entry["trace_id"] = tid
+        except Exception:
+            pass
+
         # Add extra fields (from logger.info("msg", extra={...}))
-        for key in ("task_type", "duration_s", "status", "tools_used",
+        for key in ("trace_id", "task_type", "duration_s", "status", "tools_used",
                      "session_id", "user_id", "model", "tokens",
                      "tool_name", "error"):
             val = getattr(record, key, None)

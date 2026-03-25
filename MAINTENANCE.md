@@ -81,6 +81,7 @@ mul-agent/
 │   │   ├── llm.py                 #   多模型 LLM 管理
 │   │   ├── vector.py              #   Qdrant 向量 + 三级 Embedding
 │   │   ├── observability.py       #   Prometheus 指标 + 分布式追踪
+│   │   ├── trace_context.py       #   请求级 trace_id 上下文（contextvars）
 │   │   ├── redis_client.py        #   Redis 客户端
 │   │   ├── db.py                  #   PostgreSQL 异步连接
 │   │   ├── tokenizer.py           #   Token 计数与截断
@@ -107,7 +108,7 @@ mul-agent/
 ├── scripts/
 │   └── setup.sh                   # 统一管理脚本（服务状态/重启/日志/启动 CLI）
 ├── tests/
-│   ├── unit/                      # 单元测试（17 个文件，225 个用例）
+│   ├── unit/                      # 单元测试（19 个文件，236 个用例）
 │   ├── integration/               # 集成测试
 │   └── e2e/                       # 端到端测试
 ├── docker/docker-compose.yaml     # 容器化部署编排
@@ -489,7 +490,25 @@ metadata:
 
 ## 12. 变更日志
 
-### v0.8.0 — 错误分类 + 委派深度控制 + 降级测试（当前）
+### v0.9.0 — Health API 增强 + trace_id 全链路传播（当前）
+
+- Health API 增强：
+  - 每组件返回 `ComponentStatus`（ok/latency_ms/error），替代简单布尔值
+  - 新增 PostgreSQL 实际连接测试（`SELECT 1`），不再仅检查 factory 是否存在
+  - 版本号动态读取（package metadata → pyproject.toml 回退），不再硬编码
+  - 状态三级：`ok` / `degraded`（基础设施降级）/ `error`（LLM 不可用）
+- trace_id 全链路传播：
+  - 新增 `common/trace_context.py`：基于 `contextvars.ContextVar` 的请求级追踪上下文
+  - HTTP API（routes + streaming）、飞书 Bot、CLI Runner 三个入口点均自动生成 trace_id
+  - `JSONFormatter` 自动注入 trace_id 到所有日志输出
+  - `react_loop` 启动时记录 trace_id 到日志
+  - `TaskTrace` ORM 模型新增 `trace_id` 字段（可选，含索引）
+  - `record_task_trace` 自动从上下文提取 trace_id
+  - `TaskResponse` 返回 trace_id，客户端可用于日志关联
+  - SSE streaming 结果事件包含 trace_id
+- 新增 8 个 trace_context 单元测试 + 3 个 health API 测试（共 236 个）
+
+### v0.8.0 — 错误分类 + 委派深度控制 + 降级测试
 
 - 工具错误分类系统（`classify_tool_error` + `ToolErrorKind`）：
   - 区分 `RETRYABLE`（超时/限速/连接错误）和 `FATAL`（权限/无效参数/未找到）

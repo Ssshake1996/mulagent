@@ -50,6 +50,7 @@ class TaskRequest(BaseModel):
 class TaskResponse(BaseModel):
     task_id: str
     session_id: str
+    trace_id: str = ""
     status: str
     intent: str
     model_used: str
@@ -72,6 +73,13 @@ class FeedbackResponse(BaseModel):
     status: str
 
 
+class ComponentStatus(BaseModel):
+    """Per-component health detail."""
+    ok: bool
+    latency_ms: float = 0
+    error: str = ""
+
+
 class HealthResponse(BaseModel):
     status: str
     version: str
@@ -82,8 +90,27 @@ class HealthResponse(BaseModel):
     redis_connected: bool = False
     uptime_s: float = 0
     tools_count: int = 0
+    # Enhanced: per-component detail
+    components: dict[str, ComponentStatus] = {}
 
 _start_time: float = 0
+
+
+def _get_version() -> str:
+    """Read version from package metadata or fallback."""
+    try:
+        from importlib.metadata import version
+        return version("mulagent")
+    except Exception:
+        pass
+    try:
+        import tomllib
+        from common.config import PROJECT_ROOT
+        with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
+            data = tomllib.load(f)
+        return data.get("project", {}).get("version", "0.0.0")
+    except Exception:
+        return "0.0.0"
 
 
 def set_start_time():
@@ -92,28 +119,54 @@ def set_start_time():
     _start_time = time.monotonic()
 
 
+async def _check_component(name: str, check_fn) -> ComponentStatus:
+    """Run a health check with latency tracking."""
+    import time
+    t0 = time.perf_counter()
+    try:
+        await check_fn()
+        return ComponentStatus(ok=True, latency_ms=round((time.perf_counter() - t0) * 1000, 1))
+    except Exception as e:
+        return ComponentStatus(ok=False, latency_ms=round((time.perf_counter() - t0) * 1000, 1), error=str(e)[:100])
+
+
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
     """Comprehensive health check: LLM, DB, Qdrant, Redis, tools."""
     import time
 
+    components: dict[str, ComponentStatus] = {}
+
     # Check Redis connectivity
-    redis_ok = False
-    try:
+    async def _check_redis():
         from common.redis_client import get_redis
         r = await get_redis()
-        redis_ok = r is not None
-    except Exception:
-        pass
+        if r is None:
+            raise ConnectionError("Redis client is None")
+    components["redis"] = await _check_component("redis", _check_redis)
 
     # Check Qdrant connectivity
-    qdrant_ok = False
-    if _qdrant is not None:
-        try:
-            _qdrant.get_collections()
-            qdrant_ok = True
-        except Exception:
-            pass
+    async def _check_qdrant():
+        if _qdrant is None:
+            raise ConnectionError("Qdrant client not initialized")
+        _qdrant.get_collections()
+    components["qdrant"] = await _check_component("qdrant", _check_qdrant)
+
+    # Check PostgreSQL connectivity
+    async def _check_db():
+        if _db_session_factory is None:
+            raise ConnectionError("Database session factory not initialized")
+        async with _db_session_factory() as db:
+            await db.execute(
+                __import__("sqlalchemy").text("SELECT 1")
+            )
+    components["database"] = await _check_component("database", _check_db)
+
+    # Check LLM availability
+    components["llm"] = ComponentStatus(
+        ok=_llm is not None,
+        error="" if _llm is not None else "LLM not configured",
+    )
 
     # Count available tools
     tools_count = 0
@@ -125,21 +178,23 @@ async def health_check():
 
     uptime = time.monotonic() - _start_time if _start_time else 0
 
-    # Overall status: degraded if any component is down
-    status = "ok"
-    if not qdrant_ok:
-        status = "degraded"
+    # Overall status: degraded if any non-LLM component is down
+    degraded_components = [k for k, v in components.items() if not v.ok and k != "llm"]
+    status = "ok" if not degraded_components else "degraded"
+    if not components.get("llm", ComponentStatus(ok=False)).ok:
+        status = "error"
 
     return HealthResponse(
         status=status,
-        version="0.1.0",
+        version=_get_version(),
         llm_default=_llm_manager.default_id if _llm_manager else "",
         llm_models=_llm_manager.list_models() if _llm_manager else [],
-        db_connected=_db_session_factory is not None,
-        qdrant_connected=qdrant_ok,
-        redis_connected=redis_ok,
+        db_connected=components["database"].ok,
+        qdrant_connected=components["qdrant"].ok,
+        redis_connected=components["redis"].ok,
         uptime_s=round(uptime, 1),
         tools_count=tools_count,
+        components=components,
     )
 
 
@@ -171,8 +226,13 @@ async def readiness():
 @router.post("/tasks", response_model=TaskResponse)
 async def create_task(req: TaskRequest):
     """Submit a task for multi-agent processing."""
+    from common.trace_context import trace_ctx
+
     session_id = req.session_id or str(uuid.uuid4())
     task_id = uuid.uuid4()
+    trace_id = trace_ctx.new_trace()
+
+    logger.info("Task %s started (trace=%s)", task_id, trace_id)
 
     # Resolve which LLM to use
     llm = _llm
@@ -236,6 +296,7 @@ async def create_task(req: TaskRequest):
     return TaskResponse(
         task_id=str(task_id),
         session_id=session_id,
+        trace_id=trace_id,
         status=result.get("status", "unknown"),
         intent=result.get("intent", "general"),
         model_used=model_used,
