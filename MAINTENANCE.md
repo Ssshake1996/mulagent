@@ -514,7 +514,27 @@ metadata:
 
 ## 12. 变更日志
 
-### v0.12.0 — 动态超时 + 进度条单行刷新（当前）
+### v0.13.0 — 自我进化系统（当前）
+
+- **5 大进化模块**，实现从被动学习到主动自我改进的闭环：
+  - `evolution/diagnostician.py` — 诊断器：聚合 trace、feedback、tool learning、会话数据，输出系统弱点报告
+  - `evolution/prescriber.py` — 处方器：基于诊断结果，通过 LLM + 规则引擎生成具体改进方案（prompt 优化、新技能、新工具、知识更新、参数调优）
+  - `evolution/applier.py` — 执行器：安全写入配置文件，支持备份、回滚、热加载，不修改核心代码
+  - `evolution/absorber.py` — 吸收器：给定 Git URL，自动 clone → 分析结构 → 识别能力 → 生成融合方案
+  - `evolution/controller.py` — 控制器：串联以上模块，支持 3 种执行模式
+- **3 种进化模式**：
+  - `propose`（默认）— 只诊断 + 建议，不修改任何文件
+  - `auto` — 自动执行安全改动（参数调优），高风险改动需确认
+  - `full` — 执行所有改动（prompt、技能、工具、知识、参数）
+- **3 种触发入口**：
+  - CLI 参数：`mulagent --evolve [propose|diagnose|auto|full]`、`mulagent --absorb <git_url>`
+  - Headless 命令：`/evolve`、`/absorb <url>`
+  - TUI 命令：`/evolve`、`/absorb <url>`（支持命令补全）
+- **安全边界**：tune_params 自动执行 → prompt/skill/tool/knowledge 需确认 → 核心代码永不自动修改
+- 进化日志持久化到 `data/evolution_logs/`，支持 `/evolve history` 查看历史
+- 新增 20+ 单元测试，总测试数 267
+
+### v0.12.0 — 动态超时 + 进度条单行刷新
 
 - 任务类型智能超时（`estimate_timeout` / `classify_task_type`）：
   - 根据用户输入自动识别任务类别：writing(600s)、coding(480s)、translation(480s)、analysis(420s)、search(180s)、summary(180s)、general(默认)

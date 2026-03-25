@@ -22,6 +22,8 @@ def _print_banner(session_id: str, model: str) -> None:
     print("  /sessions      |  /resume <id> 恢复会话")
     print("  /modify        |  /quit        退出")
     print("  /modify help   -- context CRUD (list/view/del/edit/clear)")
+    print("  /evolve        -- self-evolution (diagnose/propose/auto/full)")
+    print("  /absorb <url>  -- absorb external Git project")
     print("-" * 60)
     print()
 
@@ -220,6 +222,14 @@ async def _repl(runner, session_id: str) -> None:
 
         if cmd.startswith("/directives"):
             _handle_directives(runner, line)
+            continue
+
+        if cmd.startswith("/evolve"):
+            await _handle_evolve(runner, line)
+            continue
+
+        if cmd.startswith("/absorb"):
+            await _handle_absorb(runner, line)
             continue
 
         if cmd.startswith("/"):
@@ -463,6 +473,85 @@ def _handle_directives(runner, text: str) -> None:
         print("    del <n>       -- remove directive by index")
         print("    clear         -- remove all persistent directives")
         print()
+
+
+async def _handle_evolve(runner, line: str) -> None:
+    """Handle /evolve commands for self-evolution."""
+    parts = line.split(maxsplit=1)
+    sub = parts[1].strip().lower() if len(parts) > 1 else "propose"
+
+    from evolution.controller import EvolutionController
+
+    ctrl = EvolutionController()
+    llm = runner._react_params.get("llm")
+
+    if sub in ("propose", ""):
+        print("  Diagnosing system... (analyzing recent task history)")
+        report = await ctrl.evolve(mode="propose", llm=llm)
+        print(report.summary())
+        print()
+
+    elif sub == "diagnose":
+        print("  Running diagnosis...")
+        summary = await ctrl.diagnose_only()
+        print(summary)
+        print()
+
+    elif sub == "auto":
+        print("  Running auto-evolution (safe changes only)...")
+        report = await ctrl.evolve(mode="auto", llm=llm)
+        print(report.summary())
+        print()
+
+    elif sub == "full":
+        print("  Running full evolution (all changes)...")
+        report = await ctrl.evolve(mode="full", llm=llm)
+        print(report.summary())
+        print()
+
+    elif sub == "history":
+        logs = ctrl.list_evolution_logs(limit=10)
+        if not logs:
+            print("  (no evolution history)")
+        else:
+            print(f"  Evolution History ({len(logs)} records):")
+            for log in logs:
+                print(f"    {log['timestamp']}  {log['mode']}  "
+                      f"proposed={log['proposed']} applied={log['applied']}")
+        print()
+
+    else:
+        print("  /evolve subcommands:")
+        print("    propose    -- diagnose + generate proposals (default)")
+        print("    diagnose   -- show diagnostic report only")
+        print("    auto       -- apply safe changes automatically")
+        print("    full       -- apply all changes")
+        print("    history    -- show past evolution records")
+        print()
+
+
+async def _handle_absorb(runner, line: str) -> None:
+    """Handle /absorb <git_url> for external project integration."""
+    parts = line.split(maxsplit=1)
+    if len(parts) < 2:
+        print("  usage: /absorb <git_url>")
+        print("  example: /absorb https://github.com/user/project.git")
+        print()
+        return
+
+    git_url = parts[1].strip()
+    print(f"  Cloning and analyzing: {git_url}")
+    print("  This may take a moment...")
+
+    from evolution.controller import EvolutionController
+    ctrl = EvolutionController()
+    llm = runner._react_params.get("llm")
+
+    report = await ctrl.absorb_project(git_url, auto_apply=False, llm=llm)
+    print(report.summary())
+    if report.proposed:
+        print("\n  To apply these changes, use /evolve full")
+    print()
 
 
 def run_headless(args) -> None:

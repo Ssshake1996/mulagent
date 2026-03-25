@@ -19,6 +19,66 @@ from pathlib import Path
 from cli import ensure_src_path
 
 
+def _run_evolve(args) -> None:
+    """Run self-evolution and exit."""
+    ensure_src_path()
+    from cli.runner import AgentRunner
+
+    runner = AgentRunner(
+        config_path=Path(args.config) if args.config else None,
+        model_override=args.model,
+    )
+    llm = runner._react_params.get("llm")
+    mode = args.evolve
+
+    async def _exec():
+        from evolution.controller import EvolutionController
+        ctrl = EvolutionController()
+
+        if mode == "diagnose":
+            print("Diagnosing system...\n")
+            summary = await ctrl.diagnose_only()
+            print(summary)
+        elif mode == "history":
+            logs = ctrl.list_evolution_logs()
+            if not logs:
+                print("(no evolution history)")
+            else:
+                for log in logs:
+                    print(f"  {log['timestamp']}  {log['mode']}  "
+                          f"proposed={log['proposed']} applied={log['applied']}")
+        else:
+            print(f"Running evolution ({mode} mode)...\n")
+            report = await ctrl.evolve(mode=mode, llm=llm)
+            print(report.summary())
+
+    asyncio.run(_exec())
+
+
+def _run_absorb(args) -> None:
+    """Absorb an external project and exit."""
+    ensure_src_path()
+    from cli.runner import AgentRunner
+
+    runner = AgentRunner(
+        config_path=Path(args.config) if args.config else None,
+        model_override=args.model,
+    )
+    llm = runner._react_params.get("llm")
+    git_url = args.absorb
+
+    async def _exec():
+        from evolution.controller import EvolutionController
+        ctrl = EvolutionController()
+        print(f"Cloning and analyzing: {git_url}\n")
+        report = await ctrl.absorb_project(git_url, auto_apply=False, llm=llm)
+        print(report.summary())
+        if report.proposed:
+            print("\nTo apply: mulagent --evolve full")
+
+    asyncio.run(_exec())
+
+
 def _run_single(args) -> None:
     """Execute a single command and exit."""
     ensure_src_path()
@@ -72,6 +132,21 @@ def main() -> None:
         default=None,
         help="Resume an existing session by ID",
     )
+    parser.add_argument(
+        "--evolve",
+        nargs="?",
+        const="propose",
+        default=None,
+        metavar="MODE",
+        help="Self-evolution: propose (default), diagnose, auto, full",
+    )
+    parser.add_argument(
+        "--absorb",
+        type=str,
+        default=None,
+        metavar="GIT_URL",
+        help="Absorb external project capabilities from a Git URL",
+    )
     # Handle "mulagent init" before argparse
     if len(sys.argv) > 1 and sys.argv[1] == "init":
         ensure_src_path()
@@ -86,6 +161,16 @@ def main() -> None:
     # Single-shot mode
     if args.command:
         _run_single(args)
+        return
+
+    # Self-evolution mode
+    if args.evolve is not None:
+        _run_evolve(args)
+        return
+
+    # Absorb external project
+    if args.absorb:
+        _run_absorb(args)
         return
 
     # Headless REPL

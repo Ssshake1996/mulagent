@@ -55,6 +55,12 @@ COMMANDS: list[tuple[str, str]] = [
     ("/directives add", "Add a persistent directive"),
     ("/directives del", "Remove a directive by index"),
     ("/directives clear", "Remove all directives"),
+    ("/evolve", "Self-evolution: diagnose and propose improvements"),
+    ("/evolve diagnose", "Show system diagnostic report"),
+    ("/evolve auto", "Apply safe improvements automatically"),
+    ("/evolve full", "Apply all proposed improvements"),
+    ("/evolve history", "Show past evolution records"),
+    ("/absorb", "Absorb external Git project capabilities"),
     ("/quit", "Exit the application"),
 ]
 
@@ -405,6 +411,12 @@ class MulAgentApp(App):
         if cmd.startswith("/directives"):
             self._handle_directives(text)
             return
+        if cmd.startswith("/evolve"):
+            self._run_evolve(text)
+            return
+        if cmd.startswith("/absorb"):
+            self._run_absorb(text)
+            return
         if cmd.startswith("/"):
             self._write_system(f"Unknown command: {cmd}")
             return
@@ -607,6 +619,98 @@ class MulAgentApp(App):
             self.call_from_thread(self._write_system, "Context compressed")
         except Exception as e:
             self.call_from_thread(self._write_system, f"Compress failed: {e}")
+
+    # ── /evolve and /absorb handlers ────────────────────────────
+
+    @work(exclusive=True, thread=True)
+    def _run_evolve(self, text: str) -> None:
+        """Run evolution in a worker thread."""
+        import asyncio as _aio
+        parts = text.split(maxsplit=1)
+        sub = parts[1].strip().lower() if len(parts) > 1 else "propose"
+
+        from evolution.controller import EvolutionController
+        ctrl = EvolutionController()
+        llm = self.runner._react_params.get("llm")
+
+        loop = _aio.new_event_loop()
+        try:
+            if sub == "diagnose":
+                self.call_from_thread(self._write_system, "Running diagnosis...")
+                summary = loop.run_until_complete(ctrl.diagnose_only())
+                self.call_from_thread(self._write_system, summary)
+            elif sub == "history":
+                logs = ctrl.list_evolution_logs(limit=10)
+                if not logs:
+                    self.call_from_thread(self._write_system, "(no evolution history)")
+                else:
+                    lines = [f"Evolution History ({len(logs)} records):"]
+                    for log in logs:
+                        lines.append(
+                            f"  {log['timestamp']}  {log['mode']}  "
+                            f"proposed={log['proposed']} applied={log['applied']}"
+                        )
+                    self.call_from_thread(self._write_system, "\n".join(lines))
+            elif sub in ("propose", "auto", "full"):
+                self.call_from_thread(
+                    self._write_system,
+                    f"Running evolution ({sub} mode)..."
+                )
+                report = loop.run_until_complete(
+                    ctrl.evolve(mode=sub, llm=llm)
+                )
+                self.call_from_thread(self._write_system, report.summary())
+            else:
+                self.call_from_thread(self._write_system,
+                    "/evolve subcommands:\n"
+                    "  propose   -- diagnose + proposals (default)\n"
+                    "  diagnose  -- diagnostic report only\n"
+                    "  auto      -- apply safe changes\n"
+                    "  full      -- apply all changes\n"
+                    "  history   -- past evolution records"
+                )
+        except Exception as e:
+            self.call_from_thread(self._write_system, f"Evolution error: {e}")
+        finally:
+            loop.close()
+
+    @work(exclusive=True, thread=True)
+    def _run_absorb(self, text: str) -> None:
+        """Run project absorption in a worker thread."""
+        import asyncio as _aio
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2:
+            self.call_from_thread(self._write_system,
+                "usage: /absorb <git_url>\n"
+                "example: /absorb https://github.com/user/project.git"
+            )
+            return
+
+        git_url = parts[1].strip()
+        self.call_from_thread(
+            self._write_system,
+            f"Cloning and analyzing: {git_url}..."
+        )
+
+        from evolution.controller import EvolutionController
+        ctrl = EvolutionController()
+        llm = self.runner._react_params.get("llm")
+
+        loop = _aio.new_event_loop()
+        try:
+            report = loop.run_until_complete(
+                ctrl.absorb_project(git_url, auto_apply=False, llm=llm)
+            )
+            self.call_from_thread(self._write_system, report.summary())
+            if report.proposed:
+                self.call_from_thread(
+                    self._write_system,
+                    "To apply: /evolve full"
+                )
+        except Exception as e:
+            self.call_from_thread(self._write_system, f"Absorb error: {e}")
+        finally:
+            loop.close()
 
     # ── /directives handler ─────────────────────────────────────
 
