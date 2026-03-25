@@ -107,7 +107,7 @@ mul-agent/
 ├── scripts/
 │   └── setup.sh                   # 统一管理脚本（服务状态/重启/日志/启动 CLI）
 ├── tests/
-│   ├── unit/                      # 单元测试（16 个文件，212 个用例）
+│   ├── unit/                      # 单元测试（17 个文件，225 个用例）
 │   ├── integration/               # 集成测试
 │   └── e2e/                       # 端到端测试
 ├── docker/docker-compose.yaml     # 容器化部署编排
@@ -489,7 +489,24 @@ metadata:
 
 ## 12. 变更日志
 
-### v0.7.0 — 初始化向导 + 启动状态 + 跨会话指令 + Spinner（当前）
+### v0.8.0 — 错误分类 + 委派深度控制 + 降级测试（当前）
+
+- 工具错误分类系统（`classify_tool_error` + `ToolErrorKind`）：
+  - 区分 `RETRYABLE`（超时/限速/连接错误）和 `FATAL`（权限/无效参数/未找到）
+  - 可重试错误允许 5 次重试（原 3 次），并提示 LLM 可重试
+  - 致命错误保持 3 次即禁用策略
+- delegate 显式深度控制（`MAX_DELEGATE_DEPTH = 3`）：
+  - 替代原来的简单工具排除，支持多级委派（depth 0→1→2 可递归，depth 3 禁止）
+  - `delegate_depth` 通过 deps 传递，每次递增
+- 降级测试套件（`test_degradation.py`，7 个用例）：
+  - Redis 不可用时 ReAct 正常运行 + 幂等检查跳过
+  - Qdrant 不可用时 ReAct 正常运行 + delegate 正常工作
+  - PostgreSQL 不可用时 checkpoint 静默失败
+  - tool learning 不可用时静默跳过
+  - 全部基础设施同时不可用的综合测试
+- 新增 11 个错误分类测试 + 3 个深度控制测试（共 225 个）
+
+### v0.7.0 — 初始化向导 + 启动状态 + 跨会话指令 + Spinner
 
 - 新增 `mulagent init`：交互式初始化向导，支持 5 种 LLM 提供商（通义千问/DeepSeek/OpenAI/Ollama/自定义）
 - `AgentRunner.print_status()`：启动时输出组件状态（LLM/PostgreSQL/Redis/Qdrant），带颜色标记 ✓/○

@@ -489,27 +489,36 @@ async def react_loop(
                 memory.update_state("last_tool", tool_name)
                 memory.update_state("rounds_completed", round_num + 1)
 
-                # ── Strategy tracking ──
-                is_failure = _is_error_result(compressed)
+                # ── Strategy tracking with error classification ──
+                error_kind = classify_tool_error(compressed)
+                is_failure = error_kind != ToolErrorKind.OK
                 args_summary = _brief_args(tc.get("args", {}))[:80]
                 outcome = "fail" if is_failure else "ok"
                 strategies_tried.append({
                     "tool": tool_name, "args_summary": args_summary,
                     "outcome": outcome, "round": round_num,
+                    "error_kind": error_kind,
                 })
 
                 # Track consecutive failures per tool
+                # Retryable errors get a softer threshold (5 strikes)
+                # Fatal errors disable after 3 strikes
                 if is_failure:
                     tool_fail_counts[tool_name] = tool_fail_counts.get(tool_name, 0) + 1
-                    if tool_fail_counts[tool_name] >= 3:
+                    disable_threshold = 5 if error_kind == ToolErrorKind.RETRYABLE else 3
+                    if tool_fail_counts[tool_name] >= disable_threshold:
                         disabled_tools.add(tool_name)
-                        logger.warning("Tool %s disabled after %d consecutive failures",
-                                      tool_name, tool_fail_counts[tool_name])
-                        # Append warning to the result
+                        logger.warning("Tool %s disabled after %d consecutive %s failures",
+                                      tool_name, tool_fail_counts[tool_name], error_kind)
                         compressed += (
                             f"\n\n⚠️ [System] Tool '{tool_name}' has failed "
-                            f"{tool_fail_counts[tool_name]} times consecutively. "
-                            "Try a different approach or tool."
+                            f"{tool_fail_counts[tool_name]} times consecutively "
+                            f"({error_kind}). Try a different approach or tool."
+                        )
+                    elif error_kind == ToolErrorKind.RETRYABLE:
+                        compressed += (
+                            f"\n\n💡 [System] This was a transient error ({error_kind}). "
+                            "You may retry with the same parameters."
                         )
                 else:
                     tool_fail_counts[tool_name] = 0  # Reset on success
@@ -762,13 +771,55 @@ def _force_conclude_fallback(memory: WorkingMemory, user_input: str) -> str:
     return "\n\n".join(parts)
 
 
+class ToolErrorKind:
+    """Categorized tool error classification."""
+    OK = "ok"
+    RETRYABLE = "retryable"      # Transient: timeout, rate limit, network error
+    FATAL = "fatal"              # Permanent: invalid params, permission denied, not found
+
+# Patterns matched against first 200 chars of tool output (lowercased)
+_RETRYABLE_PATTERNS = [
+    "timed out", "timeout", "rate limit", "429", "503",
+    "connection refused", "connection reset", "connection error",
+    "temporarily unavailable", "server error", "502", "504",
+    "try again", "retry", "overloaded",
+]
+_FATAL_PATTERNS = [
+    "permission denied", "403", "401", "unauthorized",
+    "invalid", "not supported", "no such file",
+    "syntax error", "parse error", "command not found",
+]
+_ERROR_PATTERNS = [
+    "error", "failed", "no results", "not found",
+    "unavailable", "empty", "0 results",
+]
+
+
+def classify_tool_error(text: str) -> str:
+    """Classify a tool result into OK / RETRYABLE / FATAL.
+
+    Returns one of ToolErrorKind constants.
+    """
+    prefix = text[:200].lower()
+
+    # Check retryable first (transient errors deserve retry)
+    if any(kw in prefix for kw in _RETRYABLE_PATTERNS):
+        return ToolErrorKind.RETRYABLE
+
+    # Check fatal (permanent errors should not retry)
+    if any(kw in prefix for kw in _FATAL_PATTERNS):
+        return ToolErrorKind.FATAL
+
+    # Check generic error patterns
+    if any(kw in prefix for kw in _ERROR_PATTERNS):
+        return ToolErrorKind.FATAL  # Default unknown errors to fatal
+
+    return ToolErrorKind.OK
+
+
 def _is_error_result(text: str) -> bool:
     """Check if a tool result indicates an error/failure."""
-    prefix = text[:100].lower()
-    return any(kw in prefix for kw in [
-        "error", "failed", "timed out", "no results", "not found",
-        "unavailable", "empty", "0 results",
-    ])
+    return classify_tool_error(text) != ToolErrorKind.OK
 
 
 def _brief_args(args: dict) -> str:

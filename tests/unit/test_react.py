@@ -3,7 +3,10 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from graph.react_orchestrator import react_loop, _force_conclude_fallback, _brief_args
+from graph.react_orchestrator import (
+    react_loop, _force_conclude_fallback, _brief_args,
+    classify_tool_error, ToolErrorKind,
+)
 from graph.memory import WorkingMemory, Fact
 
 
@@ -179,6 +182,58 @@ async def test_react_loop_timeout():
     )
     # Should return something (force concluded due to timeout)
     assert len(result) > 0
+
+
+# ── Integration: run_react without LLM ──
+
+# ── Error classification tests ──
+
+def test_classify_ok():
+    assert classify_tool_error("Found 3 results for python") == ToolErrorKind.OK
+    assert classify_tool_error("exit_code: 0\nstdout:\nhello") == ToolErrorKind.OK
+
+
+def test_classify_retryable_timeout():
+    assert classify_tool_error("Tool web_search timed out (60s)") == ToolErrorKind.RETRYABLE
+
+
+def test_classify_retryable_rate_limit():
+    assert classify_tool_error("Error: rate limit exceeded, 429 Too Many Requests") == ToolErrorKind.RETRYABLE
+
+
+def test_classify_retryable_connection():
+    assert classify_tool_error("connection refused to api.example.com") == ToolErrorKind.RETRYABLE
+    assert classify_tool_error("Error: connection reset by peer") == ToolErrorKind.RETRYABLE
+
+
+def test_classify_retryable_server_error():
+    assert classify_tool_error("503 Service Temporarily Unavailable") == ToolErrorKind.RETRYABLE
+    assert classify_tool_error("502 Bad Gateway") == ToolErrorKind.RETRYABLE
+
+
+def test_classify_fatal_permission():
+    assert classify_tool_error("Error: permission denied for /etc/shadow") == ToolErrorKind.FATAL
+
+
+def test_classify_fatal_invalid():
+    assert classify_tool_error("Error: invalid parameter 'foobar'") == ToolErrorKind.FATAL
+
+
+def test_classify_fatal_generic_error():
+    """Generic 'error' or 'failed' defaults to fatal."""
+    assert classify_tool_error("Error: something went wrong") == ToolErrorKind.FATAL
+    assert classify_tool_error("Failed to execute query") == ToolErrorKind.FATAL
+
+
+def test_classify_fatal_not_found():
+    assert classify_tool_error("not found: /tmp/missing.txt") == ToolErrorKind.FATAL
+
+
+def test_classify_retryable_overrides_generic():
+    """Retryable patterns should win over generic 'error' patterns."""
+    # "timed out" is retryable even though it also contains error-like text
+    assert classify_tool_error("Error: request timed out after 30s") == ToolErrorKind.RETRYABLE
+    assert classify_tool_error("Error: 429 rate limit") == ToolErrorKind.RETRYABLE
 
 
 # ── Integration: run_react without LLM ──

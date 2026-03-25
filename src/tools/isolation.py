@@ -283,6 +283,9 @@ def reload_roles():
     logger.info("Role configs, knowledge cache, and skills cleared")
 
 
+MAX_DELEGATE_DEPTH = 3  # Maximum nesting level for delegate calls
+
+
 async def _delegate(params: dict[str, Any], **deps: Any) -> str:
     """Delegate a subtask to a sub-agent with its own context window.
 
@@ -293,8 +296,8 @@ async def _delegate(params: dict[str, Any], **deps: Any) -> str:
     Parent directives are inherited — user constraints like "删除前要经过我同意"
     are NEVER lost across delegation boundaries.
 
-    If a `role` is specified, the sub-agent uses the specialized system prompt
-    and tool subset defined in config/agents.yaml.
+    Depth control: sub-agents can re-delegate up to MAX_DELEGATE_DEPTH levels.
+    At max depth, the delegate tool is excluded to prevent runaway recursion.
     """
     task = params.get("task", "")
     if not task:
@@ -309,12 +312,20 @@ async def _delegate(params: dict[str, Any], **deps: Any) -> str:
     llm = deps.get("llm")
     tools = deps.get("tools")
     parent_directives = deps.get("parent_directives", [])
+    current_depth = deps.get("delegate_depth", 0)
 
     if llm is None or tools is None:
         return "Error: delegate requires llm and tools dependencies"
 
-    # Exclude delegate from sub-agent tools to prevent infinite recursion
-    sub_tools = {name: tool for name, tool in tools.items() if name != "delegate"}
+    # Depth control: exclude delegate tool at max depth
+    next_depth = current_depth + 1
+    if next_depth >= MAX_DELEGATE_DEPTH:
+        sub_tools = {name: tool for name, tool in tools.items() if name != "delegate"}
+        logger.info("Delegate depth %d reached max (%d), sub-agent cannot re-delegate",
+                    next_depth, MAX_DELEGATE_DEPTH)
+    else:
+        sub_tools = dict(tools)
+        logger.info("Delegate depth %d/%d, sub-agent can re-delegate", next_depth, MAX_DELEGATE_DEPTH)
 
     # ── Apply role-specific configuration ──
     role_prompt = ""
@@ -398,11 +409,13 @@ async def _delegate(params: dict[str, Any], **deps: Any) -> str:
 
     try:
         meta: dict[str, Any] = {}
+        # Pass updated depth to sub-agent's deps
+        sub_deps = {**deps, "delegate_depth": next_depth}
         result = await react_loop(
             user_input=sub_input,
             tools=sub_tools,
             llm=llm,
-            deps=deps,
+            deps=sub_deps,
             max_rounds=5,        # Shorter loop for sub-agents
             timeout=90,          # Shorter timeout
             is_sub_agent=True,   # Skip directive extraction for sub-agents

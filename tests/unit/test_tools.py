@@ -659,3 +659,84 @@ def test_coder_has_git_ops():
     reload_roles()
     roles = _load_roles()
     assert "git_ops" in roles["coder"].get("tools", [])
+
+
+# ── Delegate Depth Control ──
+
+@pytest.mark.asyncio
+async def test_delegate_depth_0_allows_redelegate():
+    """At depth 0, sub-agent should keep delegate tool (depth < MAX)."""
+    from tools.isolation import _delegate, MAX_DELEGATE_DEPTH
+
+    with patch("graph.react_orchestrator.react_loop", new_callable=AsyncMock) as mock_react:
+        mock_react.return_value = "Sub result"
+
+        mock_llm = MagicMock()
+        mock_delegate_tool = MagicMock()
+        mock_other_tool = MagicMock()
+        mock_tools = {"delegate": mock_delegate_tool, "web_search": mock_other_tool}
+
+        result = await _delegate(
+            {"task": "research something"},
+            llm=mock_llm,
+            tools=mock_tools,
+            parent_directives=[],
+            delegate_depth=0,
+        )
+
+        # Verify sub-agent was called with delegate still in tools
+        call_kwargs = mock_react.call_args
+        sub_tools = call_kwargs.kwargs.get("tools") or call_kwargs[1].get("tools")
+        assert "delegate" in sub_tools
+        # Verify depth was incremented in deps
+        sub_deps = call_kwargs.kwargs.get("deps") or call_kwargs[1].get("deps")
+        assert sub_deps["delegate_depth"] == 1
+
+
+@pytest.mark.asyncio
+async def test_delegate_at_max_depth_excludes_delegate():
+    """At max depth, delegate tool should be excluded from sub-agent."""
+    from tools.isolation import _delegate, MAX_DELEGATE_DEPTH
+
+    with patch("graph.react_orchestrator.react_loop", new_callable=AsyncMock) as mock_react:
+        mock_react.return_value = "Deep result"
+
+        mock_llm = MagicMock()
+        mock_tools = {"delegate": MagicMock(), "web_search": MagicMock()}
+
+        result = await _delegate(
+            {"task": "deep task"},
+            llm=mock_llm,
+            tools=mock_tools,
+            parent_directives=[],
+            delegate_depth=MAX_DELEGATE_DEPTH - 1,
+        )
+
+        call_kwargs = mock_react.call_args
+        sub_tools = call_kwargs.kwargs.get("tools") or call_kwargs[1].get("tools")
+        assert "delegate" not in sub_tools
+        assert "web_search" in sub_tools
+
+
+@pytest.mark.asyncio
+async def test_delegate_default_depth_is_zero():
+    """When delegate_depth is not in deps, it should default to 0."""
+    from tools.isolation import _delegate
+
+    with patch("graph.react_orchestrator.react_loop", new_callable=AsyncMock) as mock_react:
+        mock_react.return_value = "Result"
+
+        mock_llm = MagicMock()
+        mock_tools = {"delegate": MagicMock(), "web_search": MagicMock()}
+
+        # No delegate_depth in deps
+        result = await _delegate(
+            {"task": "test task"},
+            llm=mock_llm,
+            tools=mock_tools,
+            parent_directives=[],
+        )
+
+        call_kwargs = mock_react.call_args
+        sub_deps = call_kwargs.kwargs.get("deps") or call_kwargs[1].get("deps")
+        assert sub_deps["delegate_depth"] == 1
