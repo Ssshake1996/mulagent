@@ -131,13 +131,16 @@ async def _code_run(params: dict[str, Any], **deps: Any) -> str:
     language = params.get("language", "python").lower()
     timeout = min(params.get("timeout", 60), 120)
 
+    _tmpdir = tempfile.gettempdir()
+    _rust_out = str(Path(_tmpdir) / "_mul_agent_out")
+
     # Language → (file extension, command builder)
     lang_configs: dict[str, tuple[str, list[str]]] = {
-        "python": (".py", ["python3"]),
+        "python": (".py", ["python3"] if shutil.which("python3") else ["python"]),
         "javascript": (".js", ["node"]),
         "typescript": (".ts", ["npx", "tsx"]),
         "go": (".go", ["go", "run"]),
-        "rust": (".rs", ["rustc", "-o", "/tmp/_mul_agent_out"]),
+        "rust": (".rs", ["rustc", "-o", _rust_out]),
         "java": (".java", ["java"]),  # Java 11+ can run single files
     }
 
@@ -165,7 +168,7 @@ async def _code_run(params: dict[str, Any], **deps: Any) -> str:
     try:
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=ext, prefix="_mul_agent_",
-            dir="/tmp", delete=False,
+            dir=_tmpdir, delete=False,
         ) as f:
             f.write(code)
             tmp_file = f.name
@@ -174,7 +177,7 @@ async def _code_run(params: dict[str, Any], **deps: Any) -> str:
         if language == "rust":
             # Rust: compile then run
             compile_proc = await asyncio.create_subprocess_exec(
-                "rustc", tmp_file, "-o", "/tmp/_mul_agent_out",
+                "rustc", tmp_file, "-o", _rust_out,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -187,7 +190,7 @@ async def _code_run(params: dict[str, Any], **deps: Any) -> str:
                     c_stdout.decode(errors="replace").strip(),
                     c_stderr.decode(errors="replace").strip(),
                 )
-            cmd = ["/tmp/_mul_agent_out"]
+            cmd = [_rust_out]
         else:
             cmd = base_cmd + [tmp_file]
 
@@ -208,7 +211,7 @@ async def _code_run(params: dict[str, Any], **deps: Any) -> str:
         # Clean up temp files
         if tmp_file:
             Path(tmp_file).unlink(missing_ok=True)
-        Path("/tmp/_mul_agent_out").unlink(missing_ok=True)
+        Path(_rust_out).unlink(missing_ok=True)
 
 
 async def _write_file(params: dict[str, Any], **deps: Any) -> str:

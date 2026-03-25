@@ -85,7 +85,7 @@ def _resolve_paths(body: str, skill_dir: Path) -> str:
     def replacer(match: re.Match) -> str:
         prefix = match.group(1) or ""
         rel_path = match.group(2)
-        abs_path = f"{skill_abs}/{rel_path}"
+        abs_path = str(Path(skill_abs) / rel_path)
         return f"{prefix}{abs_path}"
 
     # Pattern: optional prefix char + (references/... or scripts/...)

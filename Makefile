@@ -79,7 +79,7 @@ clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete 2>/dev/null || true
 	rm -rf .pytest_cache .ruff_cache htmlcov .coverage
-	rm -rf /tmp/mulagent_files
+	rm -rf $${TMPDIR:-/tmp}/mulagent_files
 
 # ── Help ─────────────────────────────────────────────────
 help:

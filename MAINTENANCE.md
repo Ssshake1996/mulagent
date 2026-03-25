@@ -106,7 +106,8 @@ mul-agent/
 │   ├── skills/                    # 外部 Skill 目录（自动注册为 delegate 角色）
 │   └── prompts/                   # LLM 提示词模板
 ├── scripts/
-│   └── setup.sh                   # 统一管理脚本（服务状态/重启/日志/启动 CLI）
+│   ├── setup.sh                   # Linux 统一管理脚本（systemd/服务状态/日志）
+│   └── setup.ps1                  # Windows 一键安装脚本（PowerShell）
 ├── tests/
 │   ├── unit/                      # 单元测试（19 个文件，236 个用例）
 │   ├── integration/               # 集成测试
@@ -256,7 +257,30 @@ score = success_rate + C × √(ln(total_trials) / tool_trials)
 
 > **与 `mulagent` 的区别**：`mulagent` 是纯用户交互入口（不管服务状态），`setup.sh` 是运维工具（确保服务就绪后可选启动 CLI）。日常使用直接 `mulagent`，首次部署或排障用 `setup.sh`。
 
-### 6.3 systemd 服务
+### 6.3 Windows 一键安装（scripts/setup.ps1）
+
+Windows 用户使用 PowerShell 脚本安装：
+
+```powershell
+# 一键安装 + 启动
+.\scripts\setup.ps1                     # 安装依赖 + 启动 TUI
+.\scripts\setup.ps1 -Headless           # 安装依赖 + Headless REPL
+.\scripts\setup.ps1 -c "帮我查天气"     # 单次执行
+
+# 检查服务状态
+.\scripts\setup.ps1 -Status             # 检查 PG/Redis/Qdrant/API 端口
+
+# 仅安装不启动
+.\scripts\setup.ps1 -Infra              # 安装 + 检查基础设施
+```
+
+**前提条件**：
+- Python 3.10+（安装时勾选 "Add Python to PATH"）
+- 可选：Docker Desktop（用于 PostgreSQL/Redis/Qdrant）
+
+> 脚本自动处理：创建 venv → 安装包 → 检查基础设施端口 → 数据库迁移 → 启动 CLI。所有基础设施组件均为可选，核心 ReAct 循环仅需 LLM 即可运行。
+
+### 6.4 systemd 服务（仅 Linux）
 
 飞书 Bot 作为用户级 systemd 服务自启动：
 
@@ -490,7 +514,20 @@ metadata:
 
 ## 12. 变更日志
 
-### v0.9.0 — Health API 增强 + trace_id 全链路传播（当前）
+### v0.10.0 — Windows 一键安装 + 跨平台兼容（当前）
+
+- 新增 `scripts/setup.ps1`：Windows PowerShell 一键安装脚本
+  - 自动创建 venv、安装依赖、检查基础设施端口、数据库迁移、启动 CLI
+  - 支持 `-Status` / `-Headless` / `-Infra` / `-c` 等参数
+  - 基础设施检测通过 TCP 端口探测（替代 Linux systemctl）
+- 跨平台路径修复：
+  - `tools/generation.py`：`/tmp` → `tempfile.gettempdir()`，Rust 编译输出路径跨平台
+  - `tools/injection.py`：`_ALLOWED_ROOTS` 使用 `tempfile.gettempdir()` 替代硬编码 `/tmp`
+  - `tools/skill_loader.py`：路径拼接改用 `Path()` 替代字符串 `/`
+  - `tools/generation.py`：Python 命令自动检测 `python3` vs `python`（Windows 无 python3）
+- Makefile clean 目标使用 `$TMPDIR` 环境变量替代硬编码 `/tmp`
+
+### v0.9.0 — Health API 增强 + trace_id 全链路传播
 
 - Health API 增强：
   - 每组件返回 `ComponentStatus`（ok/latency_ms/error），替代简单布尔值

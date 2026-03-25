@@ -41,9 +41,10 @@ def _set_cache(url: str, content: str) -> None:
 
 
 # Safety: restrict file reading to certain directories
+import tempfile as _tempfile
 _ALLOWED_ROOTS = [
     Path.home(),
-    Path("/tmp"),
+    Path(_tempfile.gettempdir()),
 ]
 
 
