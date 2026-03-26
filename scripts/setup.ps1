@@ -396,16 +396,11 @@ if (-not (Test-Path $configPath2)) {
         & $Python -m cli.main init
     }
     Write-Host ""
-    # Re-check after init
-    if (-not (Test-Path $configPath2)) {
-        Write-Warn "Config still not found. You can run init later:"
-        Write-Host "    $Mulagent init" -ForegroundColor Cyan
-        Write-Host ""
-        Exit-WithPause 0
-    }
+    # First install: do not auto-launch CLI, let user start manually
+    Exit-WithPause 0
 }
 
-# ── Launch CLI ───────────────────────────────────────────────
+# ── Launch CLI (only on subsequent runs) ─────────────────────
 $cliArgs = @()
 
 if ($Headless) { $cliArgs += "--headless" }

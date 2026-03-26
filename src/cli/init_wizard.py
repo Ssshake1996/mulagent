@@ -113,13 +113,19 @@ def run_init() -> None:
         max_tokens = int(_ask("Max tokens", "4096"))
         api_key = ""
 
-    # Step 2: API Key
+    # Step 2: API Key & Base URL
+    print()
+    print(f"  {_BOLD}2. API 配置{_NC}")
     if not api_key:
-        print()
-        print(f"  {_BOLD}2. API Key{_NC}")
         api_key = _ask(f"{model_name} API Key")
         if not api_key:
             print(f"  {_YELLOW}未填写 API Key，启动时需要手动配置{_NC}")
+    if base_url:
+        custom_url = _ask(f"Base URL", base_url)
+        base_url = custom_url
+    else:
+        base_url = _ask(f"Base URL (留空使用官方默认)")
+
 
     # Step 3: Feishu (optional)
     print()

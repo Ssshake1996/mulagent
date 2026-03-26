@@ -405,7 +405,18 @@ if [[ "$MODE" == "infra" ]]; then
     exit 0
 fi
 
-# ── Launch CLI ────────────────────────────────────────────────────
+# ── Run init if no config (first install) ────────────────────────
+CONFIG_PATH="$PROJECT_ROOT/config/settings.yaml"
+if [[ ! -f "$CONFIG_PATH" ]]; then
+    info "No config found. Running first-time setup..."
+    echo ""
+    "$VENV_DIR/bin/mulagent" init
+    echo ""
+    # First install: do not auto-launch CLI
+    exit 0
+fi
+
+# ── Launch CLI (only on subsequent runs) ─────────────────────────
 info "Launching mul-agent CLI..."
 echo ""
 exec "$VENV_DIR/bin/mulagent" "${CLI_ARGS[@]}"

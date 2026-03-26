@@ -31,7 +31,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 2. 安装依赖包
 3. 注册 `mulagent` 到系统 PATH（Windows），安装后可在任意终端直接使用
 4. 交互式询问是否安装数据库（PostgreSQL/Redis/Qdrant，**全部可选**）
-5. 首次自动运行配置向导，然后启动 CLI
+5. 首次自动运行配置向导（配置 API Key 和 Base URL），再次运行时直接启动 CLI
 
 > 核心功能仅需 **Python 3.10+** 和 **LLM API Key**，不安装任何数据库也能正常使用。
 

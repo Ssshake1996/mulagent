@@ -302,16 +302,17 @@ score = success_rate + C × √(ln(total_trials) / tool_trials)
 
 **前提条件**：Python 3.10+（Windows 安装时勾选 "Add Python to PATH"）
 
-安装流程（两个平台相同，均使用 Python 虚拟环境隔离）：
+安装流程（两个平台均使用 Python 虚拟环境隔离）：
 
 ```
 Step 1: 检查 Python → 创建 .venv 虚拟环境
 Step 2: 在 venv 中安装 mul-agent 包（pip install -e .[cli]）
-Step 3: 数据库选择（交互式询问/--with-db 自动安装）
+Step 3: 注册 PATH（Windows 自动将 .venv\Scripts 加入用户 PATH，安装后可直接使用 mulagent 命令）
+Step 4: 数据库选择（交互式询问/--with-db 自动安装）
          ┌─ PostgreSQL — 任务追踪与反馈存储（可选）
          ├─ Redis      — 缓存、检查点、幂等键（可选）
          └─ Qdrant     — 向量存储、经验库、知识RAG（可选）
-Step 4: 环境摘要 → 启动 CLI
+Step 5: 环境摘要 → 首次自动运行 mulagent init 配置 API Key 和 Base URL → 完成（再次运行时直接启动 CLI）
 ```
 
 > **不安装数据库也能正常使用**。PostgreSQL 不可用时 trace 功能降级，Redis 不可用时缓存/检查点降级，Qdrant 不可用时使用内存向量。
