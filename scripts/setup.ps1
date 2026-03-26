@@ -374,6 +374,28 @@ if ($Infra) {
     Exit-WithPause 0
 }
 
+# ── Run init if no config ────────────────────────────────────
+$configPath2 = Join-Path $ProjectRoot "config\settings.yaml"
+$env:PYTHONPATH = Join-Path $ProjectRoot "src"
+
+if (-not (Test-Path $configPath2)) {
+    Write-Info "No config found. Running first-time setup (mulagent init)..."
+    Write-Host ""
+    if (Test-Path $Mulagent) {
+        & $Mulagent init
+    } else {
+        & $Python -m cli.main init
+    }
+    Write-Host ""
+    # Re-check after init
+    if (-not (Test-Path $configPath2)) {
+        Write-Warn "Config still not found. You can run init later:"
+        Write-Host "    $Mulagent init" -ForegroundColor Cyan
+        Write-Host ""
+        Exit-WithPause 0
+    }
+}
+
 # ── Launch CLI ───────────────────────────────────────────────
 $cliArgs = @()
 
@@ -386,7 +408,6 @@ if ($Command)  { $cliArgs += "-c", $Command }
 Write-Info "Launching mul-agent CLI..."
 Write-Host ""
 
-$env:PYTHONPATH = Join-Path $ProjectRoot "src"
 if (Test-Path $Mulagent) {
     & $Mulagent @cliArgs
 } else {
