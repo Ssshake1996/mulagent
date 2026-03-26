@@ -4,6 +4,7 @@
 
 .DESCRIPTION
     在 Windows 系统上安装依赖、可选安装数据库、启动 CLI。
+    使用 Python 虚拟环境隔离安装，不污染系统环境。
 
 .EXAMPLE
     .\scripts\setup.ps1                     # 安装 + 启动 TUI
@@ -25,7 +26,8 @@ param(
     [switch]$Help
 )
 
-$ErrorActionPreference = "Stop"
+# Do NOT use "Stop" globally — it causes external commands to throw on non-zero exit
+$ErrorActionPreference = "Continue"
 
 # ── Paths ────────────────────────────────────────────────────
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -52,13 +54,13 @@ function Write-SvcStatus {
 }
 
 function Test-TcpPort {
-    param($Host_, $Port)
+    param($HostName, $Port)
     try {
         $tcp = New-Object System.Net.Sockets.TcpClient
-        $tcp.ConnectAsync($Host_, $Port).Wait(1000) | Out-Null
-        $result = $tcp.Connected
+        $result = $tcp.ConnectAsync($HostName, $Port).Wait(1000)
+        $connected = $tcp.Connected
         $tcp.Close()
-        return $result
+        return $connected
     } catch {
         return $false
     }
@@ -67,7 +69,7 @@ function Test-TcpPort {
 function Test-HttpEndpoint {
     param($Url)
     try {
-        $resp = Invoke-WebRequest -Uri $Url -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+        $resp = Invoke-WebRequest -Uri $Url -TimeoutSec 2 -UseBasicParsing -ErrorAction SilentlyContinue
         return $resp.StatusCode -eq 200
     } catch {
         return $false
@@ -80,6 +82,17 @@ function Ask-YesNo {
     return $answer -match '^[Yy]$'
 }
 
+# Keep window open on error (for double-click execution)
+function Exit-WithPause {
+    param($Code)
+    if ($Host.Name -eq "ConsoleHost") {
+        Write-Host ""
+        Write-Host "  Press any key to exit..." -ForegroundColor DarkGray
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    }
+    exit $Code
+}
+
 # ── Help ─────────────────────────────────────────────────────
 if ($Help) {
     @"
@@ -89,7 +102,7 @@ Usage: .\scripts\setup.ps1 [OPTIONS]
 Options:
   -Status       Show service status
   -Infra        Check infrastructure only, don't launch CLI
-  -WithDB       Install databases (PostgreSQL/Redis/Qdrant) during setup
+  -WithDB       Install databases (PostgreSQL/Redis/Qdrant) via Docker
   -Headless     Plain REPL instead of TUI
   -Model ID     Override default LLM model
   -Config PATH  Custom config file
@@ -99,12 +112,12 @@ Options:
 
 Examples:
   .\scripts\setup.ps1                    # Install + launch TUI
-  .\scripts\setup.ps1 -WithDB           # Install with databases
+  .\scripts\setup.ps1 -WithDB           # Install with databases (Docker)
   .\scripts\setup.ps1 -Headless         # Install + headless REPL
   .\scripts\setup.ps1 -c "帮我查天气"   # Single command
 
 "@
-    exit 0
+    Exit-WithPause 0
 }
 
 # ── Status mode ──────────────────────────────────────────────
@@ -129,7 +142,7 @@ if ($Status) {
     if (-not $redisOk) { Write-Host "  Redis not available — checkpoint & cache disabled" -ForegroundColor DarkGray }
     if (-not $qdrantOk) { Write-Host "  Qdrant not available — using in-memory fallback" -ForegroundColor DarkGray }
     Write-Host ""
-    exit 0
+    Exit-WithPause 0
 }
 
 # ══════════════════════════════════════════════════════════════
@@ -137,7 +150,7 @@ if ($Status) {
 # ══════════════════════════════════════════════════════════════
 Write-Host ""
 Write-Host "  +----------------------------------------------------------+" -ForegroundColor Cyan
-Write-Host "  |         mul-agent  Windows 一键安装与启动                  |" -ForegroundColor Cyan
+Write-Host "  |         mul-agent  Windows Setup                          |" -ForegroundColor Cyan
 Write-Host "  +----------------------------------------------------------+" -ForegroundColor Cyan
 Write-Host ""
 
@@ -148,39 +161,43 @@ $sysPython = Get-Command python -ErrorAction SilentlyContinue
 if (-not $sysPython) {
     Write-Err "Python not found. Please install Python 3.10+ from https://python.org"
     Write-Host "  Ensure 'Add Python to PATH' is checked during installation." -ForegroundColor Yellow
-    exit 1
+    Exit-WithPause 1
 }
 
 $pyVer = & python --version 2>&1
 Write-Host "  Python version:  " -NoNewline; Write-Host "$pyVer" -ForegroundColor Green
 
 if (-not (Test-Path $Python)) {
-    Write-Info "Creating virtual environment..."
+    Write-Info "Creating virtual environment (.venv)..."
     & python -m venv $VenvDir
-    if (-not (Test-Path $Python)) {
-        Write-Err "Failed to create venv at $VenvDir"
-        exit 1
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $Python)) {
+        Write-Err "Failed to create virtual environment at $VenvDir"
+        Write-Host "  Try: python -m pip install --upgrade pip virtualenv" -ForegroundColor Yellow
+        Exit-WithPause 1
     }
-    Write-OK "Virtual environment created."
+    Write-OK "Virtual environment created at .venv"
 } else {
     Write-OK "Virtual environment exists."
 }
 
 # ── Step 2: Install package ──────────────────────────────────
-Write-Info "Step 2/4: Installing mul-agent..."
+Write-Info "Step 2/4: Installing mul-agent into virtual environment..."
 
-$installed = $false
-try {
-    & $Python -c "import cli.runner" 2>$null
-    $installed = $true
-} catch {}
+# Check if already installed by testing import
+$env:PYTHONPATH = Join-Path $ProjectRoot "src"
+& $Python -c "import cli.runner" 2>$null
+$installed = ($LASTEXITCODE -eq 0)
 
 if (-not $installed) {
-    Write-Info "Installing (this may take a minute)..."
-    & $Pip install -e "$ProjectRoot[cli]" --quiet
+    Write-Info "Running: pip install -e .[cli] (this may take a minute)..."
+    & $Pip install -e "$ProjectRoot[cli]" --quiet 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        Write-Warn "Trying without [cli] extras..."
-        & $Pip install -e "$ProjectRoot" --quiet
+        Write-Warn "Retrying without [cli] extras..."
+        & $Pip install -e "$ProjectRoot" --quiet 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Err "Installation failed. Check your Python and pip versions."
+            Exit-WithPause 1
+        }
     }
     Write-OK "mul-agent installed."
 } else {
@@ -204,7 +221,7 @@ if ($WithDB) {
     $installRedis = $true
     $installQdrant = $true
 } else {
-    Write-Host "  数据库组件（全部可选，不安装也能正常使用核心功能）：" -ForegroundColor White
+    Write-Host "  Databases are OPTIONAL. Core features work without them." -ForegroundColor White
     Write-Host ""
 
     # PostgreSQL
@@ -214,7 +231,7 @@ if ($WithDB) {
         Write-Host "already running" -ForegroundColor Green
     } else {
         Write-Host "not running" -ForegroundColor DarkGray
-        if (Ask-YesNo "    Install PostgreSQL? (用于任务追踪与反馈存储)") {
+        if (Ask-YesNo "    Install PostgreSQL via Docker? (task trace & feedback storage)") {
             $installPg = $true
         }
     }
@@ -226,7 +243,7 @@ if ($WithDB) {
         Write-Host "already running" -ForegroundColor Green
     } else {
         Write-Host "not running" -ForegroundColor DarkGray
-        if (Ask-YesNo "    Install Redis? (用于缓存、检查点、幂等键)") {
+        if (Ask-YesNo "    Install Redis via Docker? (cache, checkpoint, idempotency)") {
             $installRedis = $true
         }
     }
@@ -238,59 +255,60 @@ if ($WithDB) {
         Write-Host "already running" -ForegroundColor Green
     } else {
         Write-Host "not running" -ForegroundColor DarkGray
-        if (Ask-YesNo "    Install Qdrant? (用于向量存储、经验库、知识RAG)") {
+        if (Ask-YesNo "    Install Qdrant via Docker? (vector storage, knowledge RAG)") {
             $installQdrant = $true
         }
     }
 }
 
 # Install via Docker if requested
-$dockerAvailable = $null -ne (Get-Command docker -ErrorAction SilentlyContinue)
+if ($installPg -or $installRedis -or $installQdrant) {
+    $dockerAvailable = $null -ne (Get-Command docker -ErrorAction SilentlyContinue)
+    if (-not $dockerAvailable) {
+        Write-Warn "Docker not found. Database installation requires Docker Desktop."
+        Write-Host "    Download: https://docs.docker.com/desktop/install/windows-install/" -ForegroundColor Yellow
+    } else {
+        if ($installPg -and -not $pgOk) {
+            Write-Info "Starting PostgreSQL via Docker..."
+            & docker run -d --name mulagent-postgres -p 5432:5432 `
+                -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=mulagent `
+                postgres:16 2>&1 | Out-Null
+            Start-Sleep -Seconds 3
+            $pgOk = Test-TcpPort "localhost" 5432
+            if ($pgOk) { Write-OK "PostgreSQL started." } else { Write-Warn "PostgreSQL may still be starting up." }
+        }
 
-if (($installPg -or $installRedis -or $installQdrant) -and -not $dockerAvailable) {
-    Write-Warn "Docker not found. Database installation requires Docker Desktop."
-    Write-Host "    Download: https://docs.docker.com/desktop/install/windows-install/" -ForegroundColor Yellow
-} else {
-    if ($installPg -and -not $pgOk) {
-        Write-Info "Starting PostgreSQL via Docker..."
-        & docker run -d --name mulagent-postgres -p 5432:5432 `
-            -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=mulagent `
-            postgres:16 2>$null
-        Start-Sleep -Seconds 3
-        $pgOk = Test-TcpPort "localhost" 5432
-        if ($pgOk) { Write-OK "PostgreSQL started." } else { Write-Warn "PostgreSQL may still be starting." }
-    }
+        if ($installRedis -and -not $redisOk) {
+            Write-Info "Starting Redis via Docker..."
+            & docker run -d --name mulagent-redis -p 6379:6379 redis:7-alpine 2>&1 | Out-Null
+            Start-Sleep -Seconds 2
+            $redisOk = Test-TcpPort "localhost" 6379
+            if ($redisOk) { Write-OK "Redis started." } else { Write-Warn "Redis may still be starting up." }
+        }
 
-    if ($installRedis -and -not $redisOk) {
-        Write-Info "Starting Redis via Docker..."
-        & docker run -d --name mulagent-redis -p 6379:6379 redis:7-alpine 2>$null
-        Start-Sleep -Seconds 2
-        $redisOk = Test-TcpPort "localhost" 6379
-        if ($redisOk) { Write-OK "Redis started." } else { Write-Warn "Redis may still be starting." }
-    }
-
-    if ($installQdrant -and -not $qdrantOk) {
-        Write-Info "Starting Qdrant via Docker..."
-        $qdrantStorage = Join-Path $ProjectRoot "data\qdrant_storage"
-        & docker run -d --name mulagent-qdrant -p 6333:6333 -p 6334:6334 `
-            -v "${qdrantStorage}:/qdrant/storage" qdrant/qdrant:latest 2>$null
-        Start-Sleep -Seconds 3
-        $qdrantOk = Test-HttpEndpoint "http://localhost:6333/healthz"
-        if ($qdrantOk) { Write-OK "Qdrant started." } else { Write-Warn "Qdrant may still be starting." }
+        if ($installQdrant -and -not $qdrantOk) {
+            Write-Info "Starting Qdrant via Docker..."
+            $qdrantStorage = Join-Path $ProjectRoot "data\qdrant_storage"
+            & docker run -d --name mulagent-qdrant -p 6333:6333 -p 6334:6334 `
+                -v "${qdrantStorage}:/qdrant/storage" qdrant/qdrant:latest 2>&1 | Out-Null
+            Start-Sleep -Seconds 3
+            $qdrantOk = Test-HttpEndpoint "http://localhost:6333/healthz"
+            if ($qdrantOk) { Write-OK "Qdrant started." } else { Write-Warn "Qdrant may still be starting up." }
+        }
     }
 }
 
-# Database migration
+# Database migration (only if PG is available)
 $alembicIni = Join-Path $ProjectRoot "alembic.ini"
 if ($pgOk -and (Test-Path $alembicIni)) {
     Write-Info "Running database migration..."
     $alembic = Join-Path $VenvDir "Scripts\alembic.exe"
     if (Test-Path $alembic) {
         Push-Location $ProjectRoot
-        try {
-            & $alembic upgrade head 2>$null
+        & $alembic upgrade head 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
             Write-OK "Database migrated."
-        } catch {
+        } else {
             Write-Warn "Database migration skipped."
         }
         Pop-Location
@@ -305,6 +323,9 @@ Write-Host ""
 
 $pad = "Python:".PadRight(16)
 Write-Host "  $pad" -NoNewline; Write-Host "$pyVer" -ForegroundColor Green
+
+$pad = "Venv:".PadRight(16)
+Write-Host "  $pad" -NoNewline; Write-Host "$VenvDir" -ForegroundColor Green
 
 $pad = "PostgreSQL:".PadRight(16)
 Write-Host "  $pad" -NoNewline
@@ -341,7 +362,7 @@ if ($Infra) {
     Write-Info "To launch CLI:"
     Write-Host "  $Mulagent"
     Write-Host "  $Mulagent --headless"
-    exit 0
+    Exit-WithPause 0
 }
 
 # ── Launch CLI ───────────────────────────────────────────────
@@ -356,9 +377,9 @@ if ($Command)  { $cliArgs += "-c", $Command }
 Write-Info "Launching mul-agent CLI..."
 Write-Host ""
 
+$env:PYTHONPATH = Join-Path $ProjectRoot "src"
 if (Test-Path $Mulagent) {
     & $Mulagent @cliArgs
 } else {
-    $env:PYTHONPATH = Join-Path $ProjectRoot "src"
     & $Python -m cli.main @cliArgs
 }

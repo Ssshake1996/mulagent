@@ -1,26 +1,60 @@
 # mul-agent — 通用多Agent协作框架
 
-自进化的多Agent协作系统，基于 LangGraph 编排 + OpenClaw Agent 运行时。
+基于 ReAct 推理循环的多智能体协作框架，支持飞书 Bot、CLI (TUI/Headless)、HTTP API 多通道交付。具备自我进化能力。
 
 ## 快速开始
 
-### 环境要求
+### 一键安装（推荐）
 
-- Python 3.12+
-- PostgreSQL（本地运行）
-- Qdrant（可选，自动降级为内存模式）
-
-### 安装
+**Linux / macOS：**
 
 ```bash
-python -m venv .venv
+git clone https://github.com/Ssshake1996/mulagent.git
+cd mulagent
+./scripts/setup.sh
+```
+
+**Windows（PowerShell）：**
+
+```powershell
+git clone https://github.com/Ssshake1996/mulagent.git
+cd mulagent
+.\scripts\setup.ps1
+```
+
+安装脚本会自动完成：
+1. 创建 Python 虚拟环境 (`.venv`)
+2. 安装依赖包
+3. 交互式询问是否安装数据库（PostgreSQL/Redis/Qdrant，**全部可选**）
+4. 启动 CLI
+
+> 核心功能仅需 **Python 3.10+** 和 **LLM API Key**，不安装任何数据库也能正常使用。
+
+### 手动安装
+
+```bash
+# Linux / macOS
+python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install -e ".[cli]"
+
+# Windows (PowerShell)
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e ".[cli]"
 ```
 
 ### 配置
 
-编辑 `config/settings.yaml`：
+首次使用运行初始化向导：
+
+```bash
+mulagent init
+```
+
+支持通义千问、DeepSeek、OpenAI、Ollama、自定义 5 种 LLM 提供商。
+
+也可手动编辑 `config/settings.yaml`（参考 `config/settings.yaml.example`）：
 
 ```yaml
 llm:
@@ -30,152 +64,119 @@ llm:
       name: "Qwen 3.5 Plus"
       model: "qwen3.5-plus"
       api_key: "your-api-key"
-      base_url: "https://coding.dashscope.aliyuncs.com/v1"
+      base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
       max_tokens: 65536
-
-database:
-  url: "postgresql+asyncpg://mulagent:mulagent@localhost:5432/mulagent"
 ```
 
-支持多模型配置，API 请求时可通过 `model` 参数选择。
-
-### 数据库初始化
+### 启动
 
 ```bash
-# 创建用户和数据库
-sudo -u postgres createuser mulagent -P  # 密码: mulagent
-sudo -u postgres createdb mulagent -O mulagent
-
-# 创建表
-PGPASSWORD=mulagent psql -h localhost -U mulagent -d mulagent <<'SQL'
-CREATE TABLE task_traces (
-    id UUID PRIMARY KEY, session_id VARCHAR(64), user_input TEXT,
-    intent_category VARCHAR(64), dag_plan JSON, final_output TEXT,
-    status VARCHAR(32) DEFAULT 'pending',
-    created_at TIMESTAMPTZ DEFAULT NOW(), completed_at TIMESTAMPTZ
-);
-CREATE TABLE subtask_traces (
-    id UUID PRIMARY KEY, task_id UUID REFERENCES task_traces(id),
-    agent_id VARCHAR(64), subtask_name VARCHAR(256),
-    input_data JSON, output_data JSON, status VARCHAR(32) DEFAULT 'pending',
-    retry_count INT DEFAULT 0, duration_ms INT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE TABLE feedbacks (
-    id UUID PRIMARY KEY, task_id UUID, rating INT,
-    comment TEXT, feedback_type VARCHAR(32) DEFAULT 'explicit',
-    created_at TIMESTAMP DEFAULT NOW()
-);
-SQL
+mulagent                         # TUI 模式（富终端）
+mulagent --headless              # Headless REPL（纯文本）
+mulagent -c "帮我写一段排序代码"   # 单次执行
 ```
-
-### 启动服务
-
-```bash
-PYTHONPATH=src uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
-### 运行测试
-
-```bash
-PYTHONPATH=src python -m pytest tests/ -v
-```
-
-## API 接口
-
-### 提交任务
-
-```bash
-curl -X POST http://localhost:8000/api/v1/tasks \
-  -H "Content-Type: application/json" \
-  -d '{"input": "写一个Python快速排序函数"}'
-```
-
-可选参数：
-- `session_id`: 会话 ID，用于关联同一对话
-- `model`: 指定 LLM 模型 ID（如 `"qwen"`, `"deepseek"`）
-
-响应包含 `timing` 字段，展示各阶段耗时（ms）。
-
-### 流式输出（SSE）
-
-```bash
-curl -N -X POST http://localhost:8000/api/v1/tasks/stream \
-  -H "Content-Type: application/json" \
-  -d '{"input": "解释量子计算"}'
-```
-
-实时推送 4 个阶段事件：`dispatch` → `plan` → `execute` → `quality_check` → `done`。
-
-### 提交反馈
-
-```bash
-curl -X POST http://localhost:8000/api/v1/feedback \
-  -H "Content-Type: application/json" \
-  -d '{"task_id": "uuid-from-trace", "rating": 5, "comment": "很好"}'
-```
-
-反馈会触发自进化：
-- rating 4-5：提升相关经验质量权重
-- rating 1-2：降低 Agent 成功率 + LLM 复盘存入反面经验
-- rating 3：不做调整
-
-### 其他接口
-
-| 接口 | 方法 | 说明 |
-|------|------|------|
-| `/api/v1/health` | GET | 健康检查（含 DB/Qdrant/LLM 状态） |
-| `/api/v1/agents` | GET | 查看所有 Agent 及其成功率 |
-| `/api/v1/models` | GET | 查看可用 LLM 模型列表 |
 
 ## 架构
 
 ```
-用户请求 → FastAPI Gateway
-              ↓
-         LangGraph 编排
-         ┌─ dispatch（意图识别 + 经验检索）
-         ├─ plan（DAG 任务分解）
-         ├─ execute（Agent 执行 + Skill 获取）
-         └─ quality_check（质量检查）
-              ↓
-         结果 + Trace → PostgreSQL
-         经验提取 → Qdrant 案例库
-              ↓
-         用户反馈 → Agent 评分调整 + 经验质量管理
+             +--- Feishu Bot (WebSocket) ---+
+             |                              |
+User --------+--- CLI TUI / Headless ------+---> SessionManager ---> run_react()
+             |                              |          |
+             +--- HTTP API (FastAPI) -------+          v
+                                              +---------------+
+                                              |  ReAct Loop   |  <-- Core reasoning
+                                              |  (LLM driven) |
+                                              +-------+-------+
+                                                      | Tool calls
+                                     +----------------+----------------+
+                                     v                v                v
+                              +-----------+   +-----------+    +-------------+
+                              | Search    |   | File/Code |    |  delegate   |
+                              | web_search|   | read_file |    | (sub-agent) |
+                              | knowledge |   | code_run  |    | 12 roles    |
+                              +-----------+   | git_ops   |    +------+------+
+                                              | sql_query |           |
+                                              | browser   |     Re-enter
+                                              +-----------+     ReAct Loop
 ```
 
-### 自进化机制
+**核心设计**：LLM 在推理循环中自主决定调用什么工具，无需意图分类或 DAG 规划。
 
-1. **经验积累**：每次任务完成后 LLM 提取可复用模式，存入 Qdrant
-2. **经验检索**：新任务分发时检索相似经验，注入 LLM 上下文辅助决策
-3. **反馈闭环**：用户评分驱动 Agent 成功率调整和经验质量升降
-4. **Skill 获取**：3 级优先链（历史经验 → Web 搜索 → LLM 生成 + 安全审查）
+## 主要功能
 
-### 错误恢复
+- **17 个内置工具**：搜索、文件操作、代码执行、浏览器、SQL、Git/GitHub、深度研究等
+- **12 个专业子 Agent**：planner、architect、researcher、coder、security_auditor 等
+- **自我进化系统**：诊断 → 处方 → 执行闭环（`mulagent --evolve`）
+- **外部项目吸收**：给定 Git URL 自动分析并融合能力（`mulagent --absorb <url>`）
+- **智能上下文压缩**：语义分类 + 话题归档 + 相关性驱动动态压缩
+- **动态任务超时**：根据任务类型自动调整超时时间
+- **多通道交付**：CLI TUI、Headless REPL、HTTP API、飞书 Bot
+- **全部数据库可选**：PostgreSQL/Redis/Qdrant 不可用时优雅降级
 
-- 所有 LLM 调用支持 2 次自动重试（指数退避）
-- Dispatcher/Quality Gate 失败自动降级到关键字/自动通过
-- Qdrant 不可用自动降级为内存模式
-- DB 不可用不阻塞任务执行（trace 记录静默失败）
+## REPL 命令
 
-## 目录结构
+| 命令 | 说明 |
+|------|------|
+| `/new` | 新建会话 |
+| `/resume <id>` | 恢复历史会话 |
+| `/model <id>` | 切换模型 |
+| `/modify` | 上下文管理（list/view/edit/del/compress/topics） |
+| `/recall <keyword>` | 召回已归档的对话话题 |
+| `/evolve` | 自我进化（diagnose/propose/auto/full） |
+| `/absorb <url>` | 吸收外部 Git 项目 |
+| `/directives` | 持久指令管理 |
+| `/quit` | 退出 |
 
+## API
+
+```bash
+# 提交任务
+curl -X POST http://localhost:8000/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"input": "写一个Python快速排序函数"}'
+
+# 流式执行 (SSE)
+curl -N -X POST http://localhost:8000/api/v1/tasks/stream \
+  -H "Content-Type: application/json" \
+  -d '{"input": "解释量子计算"}'
+
+# 健康检查
+curl http://localhost:8000/api/v1/health
 ```
-config/
-  settings.yaml          # 全局配置
-  agents.yaml            # Agent 注册表
-  prompts/               # LLM 提示词模板
-src/
-  main.py                # FastAPI 入口
-  common/                # 公共模块（config, db, llm, vector, retry, timing）
-  agents/                # Agent 层（registry, adapter, skill_acquirer, skill_security）
-  graph/                 # LangGraph 编排（dispatcher, dag_builder, orchestrator, quality_gate, state）
-  gateway/               # API 网关（routes, streaming）
-  evolution/             # 进化层（experience, trace, feedback, feedback_loop）
-  models/                # SQLAlchemy 模型
-tests/
-  unit/                  # 单元测试
-  integration/           # 集成测试（需要 PostgreSQL）
-  e2e/                   # 端到端测试
+
+## 数据库（可选）
+
+所有数据库组件均为可选，不安装也能使用核心功能：
+
+| 组件 | 用途 | 不安装时的影响 |
+|------|------|---------------|
+| PostgreSQL | 任务追踪、反馈存储 | trace 功能不可用 |
+| Redis | 缓存、检查点、幂等键 | 无缓存、无断点续作 |
+| Qdrant | 向量存储、经验库、知识 RAG | fallback 到内存向量 |
+
+```bash
+# 通过 Docker Compose 一键启动所有数据库
+docker compose -f docker/docker-compose.yaml up -d
+
+# 或在安装时选择
+./scripts/setup.sh --with-db          # Linux
+.\scripts\setup.ps1 -WithDB           # Windows
 ```
+
+## 开发
+
+```bash
+make test             # 运行测试（308+ 用例）
+make lint             # 代码检查
+make dev              # 启动 API 服务（热重载）
+make up / make down   # 启动/停止基础设施 (Docker)
+```
+
+## 文档
+
+详细架构设计、工具清单、配置说明、变更日志等见 [MAINTENANCE.md](MAINTENANCE.md)。
+
+## License
+
+MIT
