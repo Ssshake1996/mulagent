@@ -181,7 +181,7 @@ class AgentRunner:
         conv = self._session_mgr.conv_store
 
         # Load multi-turn context
-        history = conv.get_history_for_prompt(session_id, max_turns=10)
+        history = conv.get_history_for_prompt(session_id, current_query=user_input)
         directives = conv.get_all_directives(session_id, user_id="cli_user") or None
         conv.append_turn(session_id, "user", user_input)
 

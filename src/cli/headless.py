@@ -22,6 +22,7 @@ def _print_banner(session_id: str, model: str) -> None:
     print("  /sessions      |  /resume <id> 恢复会话")
     print("  /modify        |  /quit        退出")
     print("  /modify help   -- context CRUD (list/view/del/edit/clear)")
+    print("  /recall <kw>   -- recall archived topic by keyword")
     print("  /evolve        -- self-evolution (diagnose/propose/auto/full)")
     print("  /absorb <url>  -- absorb external Git project")
     print("-" * 60)
@@ -228,6 +229,10 @@ async def _repl(runner, session_id: str) -> None:
             await _handle_evolve(runner, line)
             continue
 
+        if cmd.startswith("/recall"):
+            _handle_recall(runner, session_id, line)
+            continue
+
         if cmd.startswith("/absorb"):
             await _handle_absorb(runner, line)
             continue
@@ -394,15 +399,46 @@ def _handle_modify(runner, session_id: str, text: str) -> None:
         print()
 
     elif sub == "compress":
-        llm = runner._react_params.get("llm")
-        try:
-            import asyncio as _aio
-            _aio.get_event_loop().run_until_complete(
-                conv_store.maybe_summarize(session_id, llm=llm)
-            )
-            print("  Context compressed")
-        except Exception as e:
-            print(f"  Compress failed: {e}")
+        result = conv_store.smart_compress(session_id)
+        print(f"  {result}")
+        print()
+
+    elif sub == "topics":
+        topics = conv_store.list_topics(session_id)
+        if not topics:
+            print("  (no topics)")
+        else:
+            print(f"  Topics ({len(topics)}):")
+            for t in topics:
+                status_icon = {"hot": "🔥", "cold": "❄️", "recalled": "🔄"}.get(
+                    t["status"], "?"
+                )
+                print(f"  {status_icon} [{t['id']}] {t['title'][:50]}  "
+                      f"({t['turns_count']} turns, {t['status']})")
+        print()
+
+    elif sub == "expand":
+        if len(parts) < 3:
+            print("  usage: /modify expand <topic_id>")
+            return
+        topic_id = parts[2].strip()
+        topic = conv_store.expand_topic(session_id, topic_id)
+        if topic:
+            print(f"  Expanded topic: {topic.get('title', '')[:60]}")
+            print(f"  Status → recalled (will be included in context)")
+        else:
+            print(f"  Topic '{topic_id}' not found in archive")
+        print()
+
+    elif sub == "collapse":
+        if len(parts) < 3:
+            print("  usage: /modify collapse <topic_id>")
+            return
+        topic_id = parts[2].strip()
+        if conv_store.collapse_topic(session_id, topic_id):
+            print(f"  Collapsed topic '{topic_id}' → cold")
+        else:
+            print(f"  Topic '{topic_id}' not found in archive")
         print()
 
     else:
@@ -414,7 +450,10 @@ def _handle_modify(runner, session_id: str, text: str) -> None:
         print("    edit <n>       -- open $EDITOR to edit turn n")
         print("    clear          -- remove all turns")
         print("    summary        -- show conversation summary")
-        print("    compress       -- force summarize old turns")
+        print("    compress       -- smart compress (archive old topics)")
+        print("    topics         -- list all topics (hot + archived)")
+        print("    expand <id>    -- recall an archived topic")
+        print("    collapse <id>  -- collapse a recalled topic")
         print()
 
 
@@ -473,6 +512,33 @@ def _handle_directives(runner, text: str) -> None:
         print("    del <n>       -- remove directive by index")
         print("    clear         -- remove all persistent directives")
         print()
+
+
+def _handle_recall(runner, session_id: str, line: str) -> None:
+    """Handle /recall <keyword> to retrieve archived topics."""
+    parts = line.split(maxsplit=1)
+    if len(parts) < 2:
+        print("  usage: /recall <keyword or phrase>")
+        print("  example: /recall sorting algorithm")
+        print()
+        return
+
+    query = parts[1].strip()
+    conv_store = runner.session_manager.conv_store
+    recalled = conv_store.recall_topic(session_id, query)
+
+    if not recalled:
+        print(f"  No archived topics matching '{query}'")
+        print("  Use /modify topics to see all topics")
+    else:
+        print(f"  Recalled {len(recalled)} topic(s):")
+        for t in recalled:
+            print(f"    [{t.get('id', '?')}] {t.get('title', '')[:60]}")
+            if t.get("requirement"):
+                print(f"      Req: {t['requirement'][:80]}")
+            if t.get("final_result_preview"):
+                print(f"      Result: {t['final_result_preview'][:80]}")
+        print("  These topics will now be included in context.\n")
 
 
 async def _handle_evolve(runner, line: str) -> None:

@@ -106,14 +106,32 @@ class ConversationStore:
             return None
 
     def append_turn(self, session_id: str, role: str, content: str) -> None:
-        """Append a user or assistant turn to the conversation."""
+        """Append a user or assistant turn to the conversation.
+
+        Automatically archives old topics when turns exceed threshold.
+        """
         conv = self.load(session_id)
         if conv is None:
             conv = self.create(session_id)
         now = datetime.now(timezone.utc).isoformat()
         conv["turns"].append({"role": role, "content": content, "ts": now})
         conv["updated_at"] = now
-        # Keep last 50 turns to prevent unbounded growth
+
+        # Smart auto-archive: when turns grow large, archive cold topics
+        from graph.context_compressor import ContextAssembler
+        assembler = ContextAssembler()
+        remaining, newly_archived = assembler.auto_archive(
+            conv["turns"], archive_threshold=30,
+        )
+        if newly_archived:
+            archive = conv.get("archive", {"topics": []})
+            archive["topics"].extend(newly_archived)
+            conv["archive"] = archive
+            conv["turns"] = remaining
+            logger.info("Auto-archived %d topics for session %s",
+                        len(newly_archived), session_id)
+
+        # Hard cap: keep last 50 turns as safety net
         if len(conv["turns"]) > 50:
             conv["turns"] = conv["turns"][-50:]
         self._save(session_id, conv)
@@ -257,45 +275,135 @@ class ConversationStore:
                 existing.add(d)
         self._save(session_id, conv)
 
-    def get_history_for_prompt(self, session_id: str, max_turns: int = 10) -> str:
+    def get_history_for_prompt(
+        self,
+        session_id: str,
+        current_query: str = "",
+        max_turns: int = 10,
+        max_chars: int = 8000,
+    ) -> str:
         """Build a conversation history string for the system prompt.
 
-        If conversation is long (>20 turns), older turns are summarized
-        to save context tokens while preserving key information.
+        Uses three-dimensional intelligent compression:
+        1. Semantic role classification (requirement/correction/result/...)
+        2. Topic-based archiving (cold/hot layer)
+        3. Relevance-driven dynamic compression (full/summary/title/hidden)
 
-        Returns the last N turns formatted as:
-            User: ...
-            Assistant: ...
+        Args:
+            session_id: The conversation session ID.
+            current_query: Current user query for relevance scoring.
+            max_turns: Max recent turns (fallback if compressor unavailable).
+            max_chars: Character budget for assembled context.
+
+        Returns:
+            Assembled context string optimized for LLM consumption.
         """
         conv = self.load(session_id)
         if conv is None or not conv.get("turns"):
             return ""
 
         turns = conv["turns"]
-
-        # If we have a stored summary and many turns, use summary + recent turns
         summary = conv.get("summary", "")
-        if summary and len(turns) > max_turns:
-            recent = turns[-max_turns:]
-            lines = [f"[Earlier conversation summary: {summary}]\n"]
-            for turn in recent:
-                role_label = "User" if turn["role"] == "user" else "Assistant"
-                content = turn["content"]
-                if role_label == "Assistant" and len(content) > 500:
-                    content = content[:500] + "..."
-                lines.append(f"{role_label}: {content}")
-            return "\n".join(lines)
+        archived_topics = conv.get("archive", {}).get("topics", [])
 
-        recent = turns[-max_turns:]
-        lines = []
-        for turn in recent:
-            role_label = "User" if turn["role"] == "user" else "Assistant"
-            content = turn["content"]
-            if role_label == "Assistant" and len(content) > 500:
-                content = content[:500] + "..."
-            lines.append(f"{role_label}: {content}")
+        from graph.context_compressor import ContextAssembler
+        assembler = ContextAssembler(max_chars=max_chars)
 
-        return "\n".join(lines)
+        return assembler.assemble(
+            turns=turns,
+            current_query=current_query,
+            archived_topics=archived_topics,
+            summary=summary,
+        )
+
+    def smart_compress(self, session_id: str) -> str:
+        """Force smart compression: archive old topics and return summary."""
+        conv = self.load(session_id)
+        if conv is None:
+            return "(no conversation)"
+
+        from graph.context_compressor import ContextAssembler
+        assembler = ContextAssembler()
+
+        remaining, newly_archived = assembler.auto_archive(
+            conv["turns"], archive_threshold=6,  # lower threshold for manual compress
+        )
+        if newly_archived:
+            archive = conv.get("archive", {"topics": []})
+            archive["topics"].extend(newly_archived)
+            conv["archive"] = archive
+            conv["turns"] = remaining
+            self._save(session_id, conv)
+            return f"Archived {len(newly_archived)} topic(s), {len(remaining)} turns remain"
+        return "Nothing to archive (conversation is short or single-topic)"
+
+    def recall_topic(self, session_id: str, query: str) -> list[dict]:
+        """Recall archived topics matching a query.
+
+        Returns list of matching topic summaries.
+        """
+        conv = self.load(session_id)
+        if conv is None:
+            return []
+
+        archive = conv.get("archive", {})
+        topics = archive.get("topics", [])
+        if not topics:
+            return []
+
+        from graph.context_compressor import ContextAssembler
+        assembler = ContextAssembler()
+        updated = assembler.recall_topic(topics, query)
+        archive["topics"] = updated
+        conv["archive"] = archive
+        self._save(session_id, conv)
+
+        # Return recalled topics
+        return [t for t in updated if t.get("status") == "recalled"]
+
+    def list_topics(self, session_id: str) -> list[dict]:
+        """List all topics (hot + archived) with status."""
+        conv = self.load(session_id)
+        if conv is None:
+            return []
+
+        archive = conv.get("archive", {})
+        archived_topics = archive.get("topics", [])
+
+        from graph.context_compressor import ContextAssembler
+        assembler = ContextAssembler()
+        return assembler.list_topics(conv.get("turns", []), archived_topics)
+
+    def expand_topic(self, session_id: str, topic_id: str) -> dict | None:
+        """Expand an archived topic back to full detail.
+
+        Marks the topic as 'recalled' so it will be included in context.
+        """
+        conv = self.load(session_id)
+        if conv is None:
+            return None
+
+        archive = conv.get("archive", {})
+        for topic in archive.get("topics", []):
+            if topic.get("id") == topic_id:
+                topic["status"] = "recalled"
+                self._save(session_id, conv)
+                return topic
+        return None
+
+    def collapse_topic(self, session_id: str, topic_id: str) -> bool:
+        """Collapse a recalled topic back to cold state."""
+        conv = self.load(session_id)
+        if conv is None:
+            return False
+
+        archive = conv.get("archive", {})
+        for topic in archive.get("topics", []):
+            if topic.get("id") == topic_id:
+                topic["status"] = "cold"
+                self._save(session_id, conv)
+                return True
+        return False
 
     async def maybe_summarize(self, session_id: str, llm: Any = None) -> None:
         """Summarize older turns when conversation exceeds threshold.

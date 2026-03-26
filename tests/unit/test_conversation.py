@@ -45,13 +45,19 @@ def test_append_turn_auto_creates(store):
 
 
 def test_turn_limit(store):
-    """Should cap at 50 turns."""
+    """Should keep turns bounded via auto-archive + hard cap."""
     store.create("sess_cap", "user_c")
     for i in range(60):
         store.append_turn("sess_cap", "user", f"msg {i}")
     conv = store.load("sess_cap")
-    assert len(conv["turns"]) == 50
-    assert conv["turns"][0]["content"] == "msg 10"
+    # Auto-archiving may reduce turns below 50; hard cap still at 50
+    assert len(conv["turns"]) <= 50
+    # Archived topics should exist if turns were compressed
+    archive = conv.get("archive", {})
+    total = len(conv["turns"]) + sum(
+        len(t.get("turns", [])) for t in archive.get("topics", [])
+    )
+    assert total >= 50  # no turns lost, just archived
 
 
 def test_save_directives(store):

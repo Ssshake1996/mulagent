@@ -401,7 +401,7 @@ async def _run_task_react(user_input: str, session_id: str, tracker: ProgressTra
     history = ""
     session_directives = None
     if conv:
-        history = conv.get_history_for_prompt(session_id, max_turns=10)
+        history = conv.get_history_for_prompt(session_id, current_query=user_input)
         session_directives = conv.get_directives(session_id) or None
         conv.append_turn(session_id, "user", user_input)
 

@@ -514,7 +514,20 @@ metadata:
 
 ## 12. 变更日志
 
-### v0.13.0 — 自我进化系统（当前）
+### v0.14.0 — 三维智能上下文压缩（当前）
+
+- **语义角色分类**：每条对话自动标记为 requirement/correction/error_attempt/final_result/intermediate/directive/question
+- **话题分组与归档**：自动检测话题边界，冷话题归档（cold），热话题保留（hot），支持 `/recall` 召回
+- **相关性驱动动态压缩**：基于关键词重叠 + 召回意图检测 + 时间衰减三信号计算相关性，四级压缩梯度：
+  - Full (≥0.7) → Summary (0.3–0.7) → Title (0.1–0.3) → Hidden (<0.1)
+- **新增模块 `graph/context_compressor.py`**：TurnClassifier、TopicGrouper、SmartCompressor、ContextAssembler
+- **ConversationStore 增强**：`smart_compress()`, `recall_topic()`, `list_topics()`, `expand_topic()`, `collapse_topic()`
+- **`get_history_for_prompt()` 升级**：接受 `current_query` 参数，自动按相关性组装上下文
+- **自动归档**：`append_turn()` 超过 30 轮时自动归档冷话题
+- **CLI 新命令**：`/recall <keyword>`, `/modify topics`, `/modify expand <id>`, `/modify collapse <id>`
+- 新增 41 个单元测试（总测试数 314+）
+
+### v0.13.0 — 自我进化系统
 
 - **5 大进化模块**，实现从被动学习到主动自我改进的闭环：
   - `evolution/diagnostician.py` — 诊断器：聚合 trace、feedback、tool learning、会话数据，输出系统弱点报告
