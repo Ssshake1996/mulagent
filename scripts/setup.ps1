@@ -3,21 +3,21 @@
     mul-agent Windows 一键安装与启动脚本
 
 .DESCRIPTION
-    在 Windows 系统上安装依赖、检查基础设施、启动 CLI。
-    等价于 Linux 上的 scripts/setup.sh。
+    在 Windows 系统上安装依赖、可选安装数据库、启动 CLI。
 
 .EXAMPLE
-    .\scripts\setup.ps1                 # 安装 + 启动 TUI
-    .\scripts\setup.ps1 --headless      # 安装 + 启动 headless REPL
-    .\scripts\setup.ps1 -c "查天气"     # 安装 + 单次执行
-    .\scripts\setup.ps1 --status        # 检查服务状态
-    .\scripts\setup.ps1 --infra         # 仅检查基础设施
+    .\scripts\setup.ps1                     # 安装 + 启动 TUI
+    .\scripts\setup.ps1 -Headless           # 安装 + Headless REPL
+    .\scripts\setup.ps1 -c "查天气"         # 单次执行
+    .\scripts\setup.ps1 -Status             # 检查服务状态
+    .\scripts\setup.ps1 -WithDB             # 安装时包含数据库
 #>
 
 param(
     [switch]$Status,
     [switch]$Infra,
     [switch]$Headless,
+    [switch]$WithDB,
     [string]$Model,
     [string]$Config,
     [string]$Session,
@@ -43,7 +43,7 @@ function Write-Err    { param($msg) Write-Host "  [ERR ] " -ForegroundColor Red 
 
 function Write-SvcStatus {
     param($Name, $Ok)
-    $pad = $Name.PadRight(20)
+    $pad = $Name.PadRight(16)
     if ($Ok) {
         Write-Host "  $pad" -NoNewline; Write-Host "running" -ForegroundColor Green
     } else {
@@ -51,32 +51,6 @@ function Write-SvcStatus {
     }
 }
 
-# ── Help ─────────────────────────────────────────────────────
-if ($Help) {
-    @"
-
-Usage: .\scripts\setup.ps1 [OPTIONS]
-
-Options:
-  -Status       Show service status
-  -Infra        Check infrastructure only, don't launch CLI
-  -Headless     Plain REPL instead of TUI
-  -Model ID     Override default LLM model
-  -Config PATH  Custom config file
-  -Session ID   Resume a specific session
-  -c COMMAND    Execute single command and exit
-  -Help         Show this help
-
-Examples:
-  .\scripts\setup.ps1                    # Install + launch TUI
-  .\scripts\setup.ps1 -Headless          # Install + headless REPL
-  .\scripts\setup.ps1 -c "帮我查天气"     # Single command
-
-"@
-    exit 0
-}
-
-# ── Service check helpers ────────────────────────────────────
 function Test-TcpPort {
     param($Host_, $Port)
     try {
@@ -100,44 +74,76 @@ function Test-HttpEndpoint {
     }
 }
 
+function Ask-YesNo {
+    param($Prompt)
+    $answer = Read-Host "$Prompt [y/N]"
+    return $answer -match '^[Yy]$'
+}
+
+# ── Help ─────────────────────────────────────────────────────
+if ($Help) {
+    @"
+
+Usage: .\scripts\setup.ps1 [OPTIONS]
+
+Options:
+  -Status       Show service status
+  -Infra        Check infrastructure only, don't launch CLI
+  -WithDB       Install databases (PostgreSQL/Redis/Qdrant) during setup
+  -Headless     Plain REPL instead of TUI
+  -Model ID     Override default LLM model
+  -Config PATH  Custom config file
+  -Session ID   Resume a specific session
+  -c COMMAND    Execute single command and exit
+  -Help         Show this help
+
+Examples:
+  .\scripts\setup.ps1                    # Install + launch TUI
+  .\scripts\setup.ps1 -WithDB           # Install with databases
+  .\scripts\setup.ps1 -Headless         # Install + headless REPL
+  .\scripts\setup.ps1 -c "帮我查天气"   # Single command
+
+"@
+    exit 0
+}
+
 # ── Status mode ──────────────────────────────────────────────
 if ($Status) {
     Write-Host ""
     Write-Host "  mul-agent service status" -ForegroundColor Cyan
     Write-Host ""
 
-    # PostgreSQL (port 5432)
     $pgOk = Test-TcpPort "localhost" 5432
     Write-SvcStatus "PostgreSQL" $pgOk
 
-    # Redis (port 6379)
     $redisOk = Test-TcpPort "localhost" 6379
     Write-SvcStatus "Redis" $redisOk
 
-    # Qdrant (HTTP 6333)
     $qdrantOk = Test-HttpEndpoint "http://localhost:6333/healthz"
     Write-SvcStatus "Qdrant" $qdrantOk
 
-    # API server (port 8000)
     $apiOk = Test-HttpEndpoint "http://localhost:8000/api/v1/health"
     Write-SvcStatus "API Server" $apiOk
 
     Write-Host ""
-    if ($pgOk) { Write-OK "PostgreSQL available." }
     if (-not $redisOk) { Write-Host "  Redis not available — checkpoint & cache disabled" -ForegroundColor DarkGray }
     if (-not $qdrantOk) { Write-Host "  Qdrant not available — using in-memory fallback" -ForegroundColor DarkGray }
     Write-Host ""
     exit 0
 }
 
-# ── Startup ──────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════
+# Startup: install & launch
+# ══════════════════════════════════════════════════════════════
 Write-Host ""
-Write-Host "  ╔══════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "  ║       mul-agent  Windows 一键启动         ║" -ForegroundColor Cyan
-Write-Host "  ╚══════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host "  +----------------------------------------------------------+" -ForegroundColor Cyan
+Write-Host "  |         mul-agent  Windows 一键安装与启动                  |" -ForegroundColor Cyan
+Write-Host "  +----------------------------------------------------------+" -ForegroundColor Cyan
 Write-Host ""
 
-# 0. Check Python
+# ── Step 1: Python ───────────────────────────────────────────
+Write-Info "Step 1/4: Checking Python environment..."
+
 $sysPython = Get-Command python -ErrorAction SilentlyContinue
 if (-not $sysPython) {
     Write-Err "Python not found. Please install Python 3.10+ from https://python.org"
@@ -146,9 +152,8 @@ if (-not $sysPython) {
 }
 
 $pyVer = & python --version 2>&1
-Write-Info "System Python: $pyVer"
+Write-Host "  Python version:  " -NoNewline; Write-Host "$pyVer" -ForegroundColor Green
 
-# 1. Create/check venv
 if (-not (Test-Path $Python)) {
     Write-Info "Creating virtual environment..."
     & python -m venv $VenvDir
@@ -157,9 +162,13 @@ if (-not (Test-Path $Python)) {
         exit 1
     }
     Write-OK "Virtual environment created."
+} else {
+    Write-OK "Virtual environment exists."
 }
 
-# 2. Install package
+# ── Step 2: Install package ──────────────────────────────────
+Write-Info "Step 2/4: Installing mul-agent..."
+
 $installed = $false
 try {
     & $Python -c "import cli.runner" 2>$null
@@ -167,54 +176,114 @@ try {
 } catch {}
 
 if (-not $installed) {
-    Write-Info "Installing mul-agent (this may take a minute)..."
+    Write-Info "Installing (this may take a minute)..."
     & $Pip install -e "$ProjectRoot[cli]" --quiet
     if ($LASTEXITCODE -ne 0) {
-        Write-Warn "pip install had warnings. Trying without [cli] extras..."
+        Write-Warn "Trying without [cli] extras..."
         & $Pip install -e "$ProjectRoot" --quiet
     }
     Write-OK "mul-agent installed."
+} else {
+    Write-OK "mul-agent already installed."
 }
 
-# 3. Check infrastructure
+# ── Step 3: Database selection ───────────────────────────────
+Write-Info "Step 3/4: Database configuration..."
 Write-Host ""
 
-# PostgreSQL
 $pgOk = Test-TcpPort "localhost" 5432
-$pad = "PostgreSQL:".PadRight(20)
-Write-Host "  $pad" -NoNewline
-if ($pgOk) {
-    Write-Host "running" -ForegroundColor Green
-} else {
-    Write-Host "not available (optional)" -ForegroundColor DarkGray
-}
-
-# Redis
 $redisOk = Test-TcpPort "localhost" 6379
-$pad = "Redis:".PadRight(20)
-Write-Host "  $pad" -NoNewline
-if ($redisOk) {
-    Write-Host "running" -ForegroundColor Green
-} else {
-    Write-Host "not available (optional)" -ForegroundColor DarkGray
-}
-
-# Qdrant
 $qdrantOk = Test-HttpEndpoint "http://localhost:6333/healthz"
-$pad = "Qdrant:".PadRight(20)
-Write-Host "  $pad" -NoNewline
-if ($qdrantOk) {
-    Write-Host "running" -ForegroundColor Green
+
+$installPg = $false
+$installRedis = $false
+$installQdrant = $false
+
+if ($WithDB) {
+    $installPg = $true
+    $installRedis = $true
+    $installQdrant = $true
 } else {
-    Write-Host "not available (optional)" -ForegroundColor DarkGray
+    Write-Host "  数据库组件（全部可选，不安装也能正常使用核心功能）：" -ForegroundColor White
+    Write-Host ""
+
+    # PostgreSQL
+    $pad = "PostgreSQL:".PadRight(16)
+    Write-Host "  $pad" -NoNewline
+    if ($pgOk) {
+        Write-Host "already running" -ForegroundColor Green
+    } else {
+        Write-Host "not running" -ForegroundColor DarkGray
+        if (Ask-YesNo "    Install PostgreSQL? (用于任务追踪与反馈存储)") {
+            $installPg = $true
+        }
+    }
+
+    # Redis
+    $pad = "Redis:".PadRight(16)
+    Write-Host "  $pad" -NoNewline
+    if ($redisOk) {
+        Write-Host "already running" -ForegroundColor Green
+    } else {
+        Write-Host "not running" -ForegroundColor DarkGray
+        if (Ask-YesNo "    Install Redis? (用于缓存、检查点、幂等键)") {
+            $installRedis = $true
+        }
+    }
+
+    # Qdrant
+    $pad = "Qdrant:".PadRight(16)
+    Write-Host "  $pad" -NoNewline
+    if ($qdrantOk) {
+        Write-Host "already running" -ForegroundColor Green
+    } else {
+        Write-Host "not running" -ForegroundColor DarkGray
+        if (Ask-YesNo "    Install Qdrant? (用于向量存储、经验库、知识RAG)") {
+            $installQdrant = $true
+        }
+    }
 }
 
-Write-Host ""
+# Install via Docker if requested
+$dockerAvailable = $null -ne (Get-Command docker -ErrorAction SilentlyContinue)
 
-# 4. Database migration (if PostgreSQL available and alembic exists)
+if (($installPg -or $installRedis -or $installQdrant) -and -not $dockerAvailable) {
+    Write-Warn "Docker not found. Database installation requires Docker Desktop."
+    Write-Host "    Download: https://docs.docker.com/desktop/install/windows-install/" -ForegroundColor Yellow
+} else {
+    if ($installPg -and -not $pgOk) {
+        Write-Info "Starting PostgreSQL via Docker..."
+        & docker run -d --name mulagent-postgres -p 5432:5432 `
+            -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=mulagent `
+            postgres:16 2>$null
+        Start-Sleep -Seconds 3
+        $pgOk = Test-TcpPort "localhost" 5432
+        if ($pgOk) { Write-OK "PostgreSQL started." } else { Write-Warn "PostgreSQL may still be starting." }
+    }
+
+    if ($installRedis -and -not $redisOk) {
+        Write-Info "Starting Redis via Docker..."
+        & docker run -d --name mulagent-redis -p 6379:6379 redis:7-alpine 2>$null
+        Start-Sleep -Seconds 2
+        $redisOk = Test-TcpPort "localhost" 6379
+        if ($redisOk) { Write-OK "Redis started." } else { Write-Warn "Redis may still be starting." }
+    }
+
+    if ($installQdrant -and -not $qdrantOk) {
+        Write-Info "Starting Qdrant via Docker..."
+        $qdrantStorage = Join-Path $ProjectRoot "data\qdrant_storage"
+        & docker run -d --name mulagent-qdrant -p 6333:6333 -p 6334:6334 `
+            -v "${qdrantStorage}:/qdrant/storage" qdrant/qdrant:latest 2>$null
+        Start-Sleep -Seconds 3
+        $qdrantOk = Test-HttpEndpoint "http://localhost:6333/healthz"
+        if ($qdrantOk) { Write-OK "Qdrant started." } else { Write-Warn "Qdrant may still be starting." }
+    }
+}
+
+# Database migration
 $alembicIni = Join-Path $ProjectRoot "alembic.ini"
 if ($pgOk -and (Test-Path $alembicIni)) {
-    Write-Info "Checking database schema..."
+    Write-Info "Running database migration..."
     $alembic = Join-Path $VenvDir "Scripts\alembic.exe"
     if (Test-Path $alembic) {
         Push-Location $ProjectRoot
@@ -228,20 +297,48 @@ if ($pgOk -and (Test-Path $alembicIni)) {
     }
 }
 
-# 5. Check config
+Write-Host ""
+
+# ── Step 4: Summary ──────────────────────────────────────────
+Write-Info "Step 4/4: Environment summary"
+Write-Host ""
+
+$pad = "Python:".PadRight(16)
+Write-Host "  $pad" -NoNewline; Write-Host "$pyVer" -ForegroundColor Green
+
+$pad = "PostgreSQL:".PadRight(16)
+Write-Host "  $pad" -NoNewline
+if ($pgOk) { Write-Host "running" -ForegroundColor Green }
+else { Write-Host "not installed (optional)" -ForegroundColor DarkGray }
+
+$pad = "Redis:".PadRight(16)
+Write-Host "  $pad" -NoNewline
+if ($redisOk) { Write-Host "running" -ForegroundColor Green }
+else { Write-Host "not installed (optional)" -ForegroundColor DarkGray }
+
+$pad = "Qdrant:".PadRight(16)
+Write-Host "  $pad" -NoNewline
+if ($qdrantOk) { Write-Host "running" -ForegroundColor Green }
+else { Write-Host "not installed (optional)" -ForegroundColor DarkGray }
+
+# Check config
 $configPath = Join-Path $ProjectRoot "config\settings.yaml"
-if (-not (Test-Path $configPath)) {
-    Write-Warn "config\settings.yaml not found."
-    Write-Host "  Run 'mulagent init' to create configuration." -ForegroundColor Yellow
-    Write-Host ""
+$pad = "Config:".PadRight(16)
+Write-Host "  $pad" -NoNewline
+if (Test-Path $configPath) {
+    Write-Host "found" -ForegroundColor Green
+} else {
+    Write-Host "not found" -ForegroundColor Yellow -NoNewline
+    Write-Host " — run 'mulagent init' to configure"
 }
 
-Write-OK "Setup complete."
+Write-Host ""
+Write-OK "Installation complete!"
 Write-Host ""
 
 # ── Infra-only mode ──────────────────────────────────────────
 if ($Infra) {
-    Write-Info "Infrastructure-only mode. To launch CLI:"
+    Write-Info "To launch CLI:"
     Write-Host "  $Mulagent"
     Write-Host "  $Mulagent --headless"
     exit 0
@@ -259,7 +356,6 @@ if ($Command)  { $cliArgs += "-c", $Command }
 Write-Info "Launching mul-agent CLI..."
 Write-Host ""
 
-# Use mulagent entry point if available, otherwise python -m
 if (Test-Path $Mulagent) {
     & $Mulagent @cliArgs
 } else {

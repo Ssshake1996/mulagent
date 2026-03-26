@@ -52,6 +52,7 @@ mul-agent/
 │   │   ├── react_orchestrator.py  #   ReAct 推理循环（核心）
 │   │   ├── memory.py              #   三层工作记忆
 │   │   ├── conversation.py        #   多轮对话管理 + 实体提取 + 上下文 CRUD
+│   │   ├── context_compressor.py  #   三维智能上下文压缩（语义分类/话题归档/相关性压缩）
 │   │   └── checkpoint.py          #   Redis 断点续作
 │   ├── tools/                     # 工具层（17 个工具）
 │   │   ├── registry.py            #   工具注册表
@@ -91,6 +92,11 @@ mul-agent/
 │   ├── evolution/                 # 自进化层
 │   │   ├── tool_learning.py       #   UCB1 工具学习算法
 │   │   ├── experience.py          #   经验提取与存储
+│   │   ├── diagnostician.py       #   系统诊断（任务统计/弱项分析）
+│   │   ├── prescriber.py          #   进化处方（规则+LLM 推荐改进）
+│   │   ├── applier.py             #   进化执行（备份/回滚/热重载）
+│   │   ├── absorber.py            #   外部项目吸收
+│   │   ├── controller.py          #   进化编排（诊断→处方→执行流水线）
 │   │   ├── feedback_loop.py       #   用户反馈驱动进化
 │   │   ├── feedback.py            #   反馈模型
 │   │   └── trace.py               #   执行轨迹持久化
@@ -106,7 +112,7 @@ mul-agent/
 │   ├── skills/                    # 外部 Skill 目录（自动注册为 delegate 角色）
 │   └── prompts/                   # LLM 提示词模板
 ├── scripts/
-│   ├── setup.sh                   # Linux 统一管理脚本（systemd/服务状态/日志）
+│   ├── setup.sh                   # Linux 一键安装脚本（含数据库选择）
 │   └── setup.ps1                  # Windows 一键安装脚本（PowerShell）
 ├── tests/
 │   ├── unit/                      # 单元测试（19 个文件，236 个用例）
@@ -225,74 +231,76 @@ score = success_rate + C × √(ln(total_trials) / tool_trials)
 
 ---
 
-## 6. 基础设施与服务管理
+## 6. 安装与部署
 
-### 6.1 服务清单
+### 6.1 一键安装
 
-| 组件 | 用途 | 管理方式 | 必需 |
-|------|------|----------|------|
-| PostgreSQL 16 | 执行轨迹、反馈存储 | systemd 系统服务（`postgresql@16-main`） | 是 |
-| Redis 7 | 缓存、检查点、幂等键、工具学习状态 | 可选部署 | 否（优雅降级） |
-| Qdrant | 向量存储（经验库、知识 RAG） | 可选部署 | 否（fallback 内存） |
-| 飞书 Bot | WebSocket 长连接 | systemd 用户服务（`mulagent-feishu`） | 是 |
-| FastAPI | HTTP API 服务 | 手动/Docker | 按需 |
-| CLI | TUI / Headless / 单次执行 | `mulagent` 命令 | 按需 |
+核心功能**仅需 Python 3.10+ 和 LLM API Key**，数据库全部可选。
 
-### 6.2 运维脚本（scripts/setup.sh）
-
-`scripts/setup.sh` 负责**基础设施运维**（检查/启停服务、查看日志）。默认模式附带启动 CLI，但核心职责是服务管理：
+**Linux / macOS：**
 
 ```bash
-# 运维操作
-./scripts/setup.sh --status        # 查看所有服务状态
-./scripts/setup.sh --restart       # 重启飞书 Bot（代码更新后）
-./scripts/setup.sh --stop          # 停止飞书 Bot
-./scripts/setup.sh --logs [N]      # 查看 Bot 最近 N 行日志
-./scripts/setup.sh --infra         # 仅检查基础设施，不启动 CLI
+# 一键安装 + 启动（交互式选择是否安装数据库）
+./scripts/setup.sh
 
-# 便捷启动（检查服务 → 自动修复 → 启动 CLI）
-./scripts/setup.sh                 # 检查服务 + 启动 TUI
-./scripts/setup.sh --headless      # 检查服务 + 启动 Headless
-```
-
-> **与 `mulagent` 的区别**：`mulagent` 是纯用户交互入口（不管服务状态），`setup.sh` 是运维工具（确保服务就绪后可选启动 CLI）。日常使用直接 `mulagent`，首次部署或排障用 `setup.sh`。
-
-### 6.3 Windows 一键安装（scripts/setup.ps1）
-
-Windows 用户使用 PowerShell 脚本安装：
-
-```powershell
-# 一键安装 + 启动
-.\scripts\setup.ps1                     # 安装依赖 + 启动 TUI
-.\scripts\setup.ps1 -Headless           # 安装依赖 + Headless REPL
-.\scripts\setup.ps1 -c "帮我查天气"     # 单次执行
-
-# 检查服务状态
-.\scripts\setup.ps1 -Status             # 检查 PG/Redis/Qdrant/API 端口
+# 安装时自动包含所有数据库
+./scripts/setup.sh --with-db
 
 # 仅安装不启动
-.\scripts\setup.ps1 -Infra              # 安装 + 检查基础设施
+./scripts/setup.sh --infra
 ```
 
-**前提条件**：
-- Python 3.10+（安装时勾选 "Add Python to PATH"）
-- 可选：Docker Desktop（用于 PostgreSQL/Redis/Qdrant）
+**Windows（PowerShell）：**
 
-> 脚本自动处理：创建 venv → 安装包 → 检查基础设施端口 → 数据库迁移 → 启动 CLI。所有基础设施组件均为可选，核心 ReAct 循环仅需 LLM 即可运行。
+```powershell
+# 一键安装 + 启动（交互式选择是否安装数据库）
+.\scripts\setup.ps1
 
-### 6.4 systemd 服务（仅 Linux）
+# 安装时自动包含所有数据库
+.\scripts\setup.ps1 -WithDB
 
-飞书 Bot 作为用户级 systemd 服务自启动：
+# 仅安装不启动
+.\scripts\setup.ps1 -Infra
+```
+
+安装流程（两个平台相同）：
 
 ```
-~/.config/systemd/user/mulagent-feishu.service
+Step 1: 检查 Python → 创建虚拟环境
+Step 2: 安装 mul-agent 包
+Step 3: 数据库选择（交互式/自动）
+         ┌─ PostgreSQL — 任务追踪与反馈存储（可选）
+         ├─ Redis      — 缓存、检查点、幂等键（可选）
+         └─ Qdrant     — 向量存储、经验库、知识RAG（可选）
+Step 4: 环境摘要 → 启动 CLI
 ```
 
-常用命令：
+> **不安装数据库也能正常使用**。PostgreSQL 不可用时 trace 功能降级，Redis 不可用时缓存/检查点降级，Qdrant 不可用时使用内存向量。
+
+### 6.2 数据库组件
+
+| 组件 | 用途 | 安装方式 | 不安装时的影响 |
+|------|------|----------|---------------|
+| PostgreSQL 16 | 执行轨迹、反馈存储 | apt/dnf/Docker | trace 功能不可用 |
+| Redis 7 | 缓存、检查点、幂等键 | apt/dnf/Docker | 无缓存、无断点续作 |
+| Qdrant | 向量存储、经验库、知识 RAG | Docker | fallback 到内存向量 |
+
 ```bash
-systemctl --user status mulagent-feishu    # 查看状态
-systemctl --user restart mulagent-feishu   # 重启（代码更新后）
-journalctl --user -u mulagent-feishu -f    # 实时日志
+# 也可通过 Docker Compose 一次性启动所有数据库
+docker compose -f docker/docker-compose.yaml up -d
+```
+
+### 6.3 运维命令
+
+```bash
+# Linux
+./scripts/setup.sh --status        # 查看所有服务状态
+./scripts/setup.sh --restart       # 重启飞书 Bot
+./scripts/setup.sh --stop          # 停止飞书 Bot
+./scripts/setup.sh --logs [N]      # 查看最近日志
+
+# Windows
+.\scripts\setup.ps1 -Status        # 查看服务状态
 ```
 
 ---
@@ -314,51 +322,21 @@ journalctl --user -u mulagent-feishu -f    # 实时日志
 
 ---
 
-## 8. 开发与运维命令
+## 8. 使用方式
 
-### 8.1 Make 命令
-
-```bash
-make install          # 安装依赖
-make up               # 启动基础设施（Qdrant/Redis/PostgreSQL）
-make dev              # 启动 API 服务（热重载）
-make bot              # 启动飞书 Bot
-make test             # 运行全部测试（205 个用例）
-make test-unit        # 仅单元测试
-make lint             # 代码检查（ruff）
-make format           # 代码格式化
-make migrate          # 运行数据库迁移
-make health           # 检查服务健康状态
-make reload           # 热重载配置
-make clean            # 清理缓存
-```
-
-### 8.2 CLI 命令
+### 8.1 CLI 命令
 
 ```bash
-mulagent                         # TUI 模式（Textual 富终端，支持文本选择复制）
+mulagent                         # TUI 模式（富终端，支持文本选择复制）
 mulagent --headless              # Headless REPL（纯文本）
 mulagent -c "帮我分析这段代码"     # 单次执行
 mulagent --model deepseek        # 指定模型
 mulagent --session <id>          # 恢复历史会话
+mulagent --evolve                # 自我进化（diagnose/propose/auto/full）
+mulagent --absorb <git_url>      # 吸收外部项目能力
 ```
 
-**全局安装**（任意目录可用）：
-```bash
-# 方式 1：符号链接（推荐，开发环境）
-ln -s $(pwd)/.venv/bin/mulagent ~/.local/bin/mulagent
-
-# 方式 2：pip install（新环境部署）
-pip install -e ".[cli]"
-```
-
-路径解析策略（`_find_project_root()`）：
-1. `MULAGENT_ROOT` 环境变量（显式指定）
-2. 从 CWD 向上查找 `config/settings.yaml`
-3. 从源码文件位置向上查找（editable install）
-4. `~/.mulagent/`（全局安装兜底）
-
-**REPL 内置命令**：
+### 8.2 REPL 内置命令
 
 | 命令 | 说明 |
 |------|------|
@@ -366,25 +344,25 @@ pip install -e ".[cli]"
 | `/resume <id>` | 恢复历史会话 |
 | `/model <id>` | 切换模型 |
 | `/sessions` | 会话列表 |
-| `/modify` | 上下文管理（见下方） |
+| `/modify` | 上下文管理（list/view/edit/del/clear/compress/topics/expand/collapse） |
+| `/recall <keyword>` | 召回已归档的对话话题 |
+| `/directives` | 持久指令管理 |
+| `/evolve` | 自我进化（diagnose/propose/auto/full/history） |
+| `/absorb <url>` | 吸收外部 Git 项目 |
 | `/quit` | 退出 |
 
-**`/modify` 上下文管理命令**：
+TUI 快捷键：**Ctrl+N** 新会话、**Ctrl+Q** 退出、**Esc** 聚焦输入框。输入 `/` 触发命令自动补全。
 
-| 命令 | 说明 |
-|------|------|
-| `/modify` 或 `/modify list` | 列出所有对话轮次（带索引和预览） |
-| `/modify view <n>` | 查看第 n 轮完整内容 |
-| `/modify edit <n>` | 交互式编辑第 n 轮（TUI: 编辑浮层 Ctrl+S/Esc；Headless: 打开 $EDITOR） |
-| `/modify del <n>` | 删除第 n 轮 |
-| `/modify del <n-m>` | 批量删除第 n~m 轮 |
-| `/modify clear` | 清空所有对话 |
-| `/modify summary` | 查看对话摘要 |
-| `/modify compress` | 强制压缩旧对话为摘要 |
+### 8.3 开发命令（Make）
 
-TUI 模式快捷键：**Ctrl+N** 新会话、**Ctrl+Q** 退出、**Esc** 聚焦输入框。聊天面板支持鼠标选择文本复制。
-
-> `mulagent` 不检查基础设施状态（LLM 无配置时会报错退出，PG/Redis/Qdrant 不可用时优雅降级）。首次部署请先用 `./scripts/setup.sh --infra` 确认服务就绪（见 6.2）。
+```bash
+make install          # 安装依赖
+make up / make down   # 启动/停止基础设施 (Docker)
+make dev              # 启动 API 服务（热重载）
+make test             # 运行全部测试
+make lint / make format  # 代码检查/格式化
+make migrate          # 数据库迁移
+```
 
 ---
 
