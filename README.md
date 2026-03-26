@@ -19,8 +19,12 @@ cd mulagent
 ```powershell
 git clone https://github.com/Ssshake1996/mulagent.git
 cd mulagent
-.\scripts\setup.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 ```
+
+> 如果遇到"无法加载文件...未对文件进行数字签名"错误，可先运行：
+> `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`
+> 之后就可以直接 `.\scripts\setup.ps1` 了。
 
 安装脚本会自动完成：
 1. 创建 Python 虚拟环境 (`.venv`)
