@@ -108,21 +108,26 @@ mul-agent/
 │   ├── settings.yaml.example      # 配置模板
 │   ├── agents.yaml                # 12 个专业角色定义
 │   ├── tools.yaml                 # 工具配置
-│   ├── knowledge/                 # 角色知识库（18 个 .md 文件）
+│   ├── knowledge/                 # 角色知识库（18 个 .md 文件：python/go/rust/java 等）
 │   ├── skills/                    # 外部 Skill 目录（自动注册为 delegate 角色）
-│   └── prompts/                   # LLM 提示词模板
+│   └── prompts/                   # LLM 提示词模板（legacy，保留兼容）
 ├── scripts/
 │   ├── setup.sh                   # Linux 一键安装脚本（含数据库选择）
 │   └── setup.ps1                  # Windows 一键安装脚本（PowerShell）
 ├── tests/
-│   ├── unit/                      # 单元测试（19 个文件，236 个用例）
-│   ├── integration/               # 集成测试
-│   └── e2e/                       # 端到端测试
-├── docker/docker-compose.yaml     # 容器化部署编排
-├── .github/workflows/ci.yml       # CI/CD 流水线
+│   ├── unit/                      # 单元测试（17 个文件，308+ 个用例）
+│   ├── integration/               # 集成测试（trace 持久化）
+│   └── e2e/                       # 端到端测试（HTTP + ReAct 流程）
+├── docker/
+│   ├── docker-compose.yaml        # 基础设施编排（PG/Redis/Qdrant）
+│   └── sandbox/                   # 沙箱环境配置
+├── .github/workflows/ci.yml       # CI/CD 流水线（lint + test + docker）
 ├── Dockerfile                     # 应用镜像
 ├── Makefile                       # 开发命令
 ├── alembic/                       # 数据库迁移
+├── alembic.ini                    # Alembic 配置
+├── mulagent-feishu.service        # systemd 服务定义（飞书 Bot）
+├── README.md                      # 项目说明
 └── pyproject.toml                 # 依赖定义 + CLI entry point
 ```
 
@@ -206,7 +211,27 @@ react_loop(user_input, tools, llm)
 
 ## 5. 自进化机制
 
-### 5.1 工具学习（UCB1 算法）
+### 5.1 自我进化系统（5 模块闭环）
+
+```
+Diagnostician → Prescriber → Applier
+    ↑                          │
+    └── Controller 编排 ←──────┘
+                ↓
+         Absorber (外部项目吸收)
+```
+
+| 模块 | 文件 | 职责 |
+|------|------|------|
+| Diagnostician | `evolution/diagnostician.py` | 聚合 trace/feedback/会话数据，输出系统弱点报告 |
+| Prescriber | `evolution/prescriber.py` | 基于诊断结果，LLM + 规则引擎生成改进方案 |
+| Applier | `evolution/applier.py` | 安全写入配置，支持备份/回滚/热加载 |
+| Absorber | `evolution/absorber.py` | clone Git 项目 → 分析结构 → 识别能力 → 生成融合方案 |
+| Controller | `evolution/controller.py` | 串联以上模块，3 种执行模式（propose/auto/full） |
+
+**安全边界**：`tune_params` → 自动执行 | `prompt/skill/tool/knowledge` → 需确认 | 核心代码 → 永不自动修改
+
+### 5.2 工具学习（UCB1 算法）
 
 ```
 score = success_rate + C × √(ln(total_trials) / tool_trials)
@@ -216,7 +241,7 @@ score = success_rate + C × √(ln(total_trials) / tool_trials)
 - 每日衰减因子 0.995，防止马太效应
 - 状态持久化到 Redis
 
-### 5.2 经验循环
+### 5.3 经验循环
 
 ```
 任务执行 → 提取经验模式 → 存入 Qdrant 向量库
@@ -224,10 +249,22 @@ score = success_rate + C × √(ln(total_trials) / tool_trials)
      └──── 语义检索相似经验 ←────────┘
 ```
 
-### 5.3 用户反馈
+### 5.4 用户反馈
 
 - 低评分（1-2）→ LLM 回顾分析 → 存入负面经验
 - 高评分（4-5）→ 提升经验质量权重
+
+### 5.5 三维智能上下文压缩
+
+```
+维度 1: 语义角色分类 (requirement/correction/error_attempt/final_result/intermediate/directive/question)
+维度 2: 话题分组与归档 (hot → cold → recalled)
+维度 3: 相关性动态压缩 (Full ≥0.7 → Summary 0.3–0.7 → Title 0.1–0.3 → Hidden <0.1)
+```
+
+- 三信号相关性评分：关键词重叠 (0.5) + 召回意图检测 (0.3) + 时间衰减 (0.2)
+- 超过 30 轮自动归档冷话题，`/recall` 可随时召回
+- 模块：`graph/context_compressor.py`（TurnClassifier / TopicGrouper / SmartCompressor / ContextAssembler）
 
 ---
 
@@ -263,12 +300,14 @@ score = success_rate + C × √(ln(total_trials) / tool_trials)
 .\scripts\setup.ps1 -Infra
 ```
 
-安装流程（两个平台相同）：
+**前提条件**：Python 3.10+（Windows 安装时勾选 "Add Python to PATH"）
+
+安装流程（两个平台相同，均使用 Python 虚拟环境隔离）：
 
 ```
-Step 1: 检查 Python → 创建虚拟环境
-Step 2: 安装 mul-agent 包
-Step 3: 数据库选择（交互式/自动）
+Step 1: 检查 Python → 创建 .venv 虚拟环境
+Step 2: 在 venv 中安装 mul-agent 包（pip install -e .[cli]）
+Step 3: 数据库选择（交互式询问/--with-db 自动安装）
          ┌─ PostgreSQL — 任务追踪与反馈存储（可选）
          ├─ Redis      — 缓存、检查点、幂等键（可选）
          └─ Qdrant     — 向量存储、经验库、知识RAG（可选）
@@ -276,6 +315,7 @@ Step 4: 环境摘要 → 启动 CLI
 ```
 
 > **不安装数据库也能正常使用**。PostgreSQL 不可用时 trace 功能降级，Redis 不可用时缓存/检查点降级，Qdrant 不可用时使用内存向量。
+> Windows 上数据库通过 Docker 安装（需安装 Docker Desktop），Linux 上支持 apt/dnf 原生安装或 Docker。
 
 ### 6.2 数据库组件
 
@@ -312,7 +352,9 @@ docker compose -f docker/docker-compose.yaml up -d
 | POST | `/api/v1/tasks` | 提交任务 |
 | POST | `/api/v1/tasks/stream` | 流式执行（SSE） |
 | POST | `/api/v1/feedback` | 提交评分反馈 |
-| GET | `/api/v1/health` | 健康检查 |
+| GET | `/api/v1/health` | 健康检查（含组件状态 + 延迟） |
+| GET | `/api/v1/health/liveness` | 存活探针 |
+| GET | `/api/v1/health/readiness` | 就绪探针 |
 | GET | `/api/v1/models` | 列出可用模型 |
 | GET | `/api/v1/metrics` | 系统指标（JSON） |
 | GET | `/api/v1/metrics/prometheus` | Prometheus 格式指标 |
@@ -375,17 +417,29 @@ make migrate          # 数据库迁移
 
 ```yaml
 llm:
-  default: "qwen"                     # 默认模型
+  default: "qwen"                     # 默认模型 ID
   models:
     qwen:
-      provider: "openai_compat"
-      base_url: "..."
-      api_key: "..."
+      name: "Qwen 3.5 Plus"
       model: "qwen3.5-plus"
+      api_key: ""                     # 填入 API Key
+      base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      max_tokens: 65536
+    # deepseek / openai / ollama 等其他模型按相同格式配置
+
+database:
+  url: "postgresql+asyncpg://mulagent:mulagent@localhost:5432/mulagent"
+
+redis:
+  url: "redis://localhost:6379/0"
+
+qdrant:
+  url: "http://localhost:6333"
+  collection_name: "case_library"
 
 react:
   max_rounds: 10                      # 最大推理轮次
-  timeout: 180                        # 总超时（秒）
+  timeout: 180                        # 默认超时（秒，动态超时会根据任务类型覆盖）
   tool_timeout: 60                    # 单工具超时
   max_parallel_tools: 5               # 并行工具数
   max_conversation_pairs: 4           # 上下文保留轮数
@@ -395,10 +449,12 @@ embedding:
   base_url: "..."                     # Embedding API 地址
   model: "text-embedding-v3"
 
-feishu:
-  app_id: "..."                       # 飞书应用 ID
-  app_secret: "..."                   # 飞书应用密钥
+feishu:                               # 飞书 Bot（可选）
+  app_id: "..."
+  app_secret: "..."
 ```
+
+> 首次使用运行 `mulagent init` 交互式生成配置，支持通义千问/DeepSeek/OpenAI/Ollama/自定义 5 种 LLM 提供商。
 
 ---
 
@@ -481,12 +537,14 @@ metadata:
 | 写操作幂等键 | Redis SET NX 防止重复执行 |
 | 每 3 轮保存检查点 | 平衡性能与恢复粒度 |
 | SessionManager 适配器层 | 飞书/CLI/API 共享会话存储，切换通道不丢上下文 |
-| CLI 使用全栈依赖（PG/Redis/Qdrant） | 与服务端行为一致，trace 和 checkpoint 完整可用 |
-| systemd 用户服务管理 Bot | 开机自启、崩溃自恢复、日志归档，比 nohup 可靠 |
+| 所有数据库组件可选 | PG/Redis/Qdrant 不可用时优雅降级，核心功能仅需 LLM |
+| 三维上下文压缩 | 语义分类 + 话题归档 + 相关性压缩，长对话不丢失关键信息 |
+| 自我进化三级安全 | 参数自动→配置需确认→代码永不修改，防止系统自毁 |
+| 动态任务超时 | 不同任务类型配不同超时，避免长任务被误杀或短任务空等 |
 | Textual 作为可选依赖 | headless 模式零额外依赖，TUI 仅 `pip install mulagent[cli]` |
-| TextArea 替代 RichLog | 牺牲富文本标记换取原生文本选择复制能力 |
-| /modify 上下文 CRUD | 用户可精细控制对话上下文，手动压缩降低 token 消耗 |
+| /modify 上下文 CRUD | 用户可精细控制对话上下文，配合智能压缩降低 token 消耗 |
 | PROJECT_ROOT 统一解析 | 环境变量→CWD→源码→~/.mulagent 四级降级，支持全局安装 |
+| 一键安装 + 交互式数据库选择 | 降低入门门槛，按需安装基础设施，venv 隔离避免依赖冲突 |
 
 ---
 
@@ -503,7 +561,7 @@ metadata:
 - **`get_history_for_prompt()` 升级**：接受 `current_query` 参数，自动按相关性组装上下文
 - **自动归档**：`append_turn()` 超过 30 轮时自动归档冷话题
 - **CLI 新命令**：`/recall <keyword>`, `/modify topics`, `/modify expand <id>`, `/modify collapse <id>`
-- 新增 41 个单元测试（总测试数 314+）
+- 新增 41 个单元测试（总测试数 308）
 
 ### v0.13.0 — 自我进化系统
 
@@ -546,7 +604,7 @@ metadata:
   - 支持实时过滤：随着输入内容缩小候选范围
   - 上/下箭头键在候选列表中导航，Tab 或 Enter 确认选择
   - Esc 关闭弹窗，继续输入自动隐藏
-  - 覆盖 17 个命令：`/new`、`/help`、`/sessions`、`/resume`、`/model`、`/modify *`、`/directives *`、`/quit`
+  - 覆盖所有命令：`/new`、`/help`、`/sessions`、`/resume`、`/model`、`/modify *`、`/directives *`、`/evolve *`、`/absorb`、`/recall`、`/quit`
   - 需要参数的命令（如 `/resume`、`/modify edit`）自动追加空格
 - 编辑器保存 UX 改进（`/modify edit`）：
   - 新增醒目的操作提示栏（高亮背景）："Ctrl+S = Save and close | Esc = Cancel without saving"
