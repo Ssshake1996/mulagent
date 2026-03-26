@@ -155,7 +155,7 @@ Write-Host "  +----------------------------------------------------------+" -For
 Write-Host ""
 
 # ── Step 1: Python ───────────────────────────────────────────
-Write-Info "Step 1/4: Checking Python environment..."
+Write-Info "Step 1/5: Checking Python environment..."
 
 $sysPython = Get-Command python -ErrorAction SilentlyContinue
 if (-not $sysPython) {
@@ -181,7 +181,7 @@ if (-not (Test-Path $Python)) {
 }
 
 # ── Step 2: Install package ──────────────────────────────────
-Write-Info "Step 2/4: Installing mul-agent into virtual environment..."
+Write-Info "Step 2/5: Installing mul-agent into virtual environment..."
 
 # Check if already installed by testing import
 $env:PYTHONPATH = Join-Path $ProjectRoot "src"
@@ -204,8 +204,23 @@ if (-not $installed) {
     Write-OK "mul-agent already installed."
 }
 
-# ── Step 3: Database selection ───────────────────────────────
-Write-Info "Step 3/4: Database configuration..."
+# ── Step 3: Register PATH ────────────────────────────────────
+Write-Info "Step 3/5: Registering mulagent to system PATH..."
+
+$ScriptsDir = Join-Path $VenvDir "Scripts"
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if ($userPath -split ";" | Where-Object { $_ -eq $ScriptsDir }) {
+    Write-OK "PATH already contains $ScriptsDir"
+} else {
+    [Environment]::SetEnvironmentVariable("Path", "$ScriptsDir;$userPath", "User")
+    # Also update current session so mulagent works immediately
+    $env:Path = "$ScriptsDir;$env:Path"
+    Write-OK "Added $ScriptsDir to user PATH (permanent)."
+    Write-Host "  'mulagent' command will be available in any new PowerShell window." -ForegroundColor DarkGray
+}
+
+# ── Step 4: Database selection ───────────────────────────────
+Write-Info "Step 4/5: Database configuration..."
 Write-Host ""
 
 $pgOk = Test-TcpPort "localhost" 5432
@@ -317,8 +332,8 @@ if ($pgOk -and (Test-Path $alembicIni)) {
 
 Write-Host ""
 
-# ── Step 4: Summary ──────────────────────────────────────────
-Write-Info "Step 4/4: Environment summary"
+# ── Step 5: Summary ──────────────────────────────────────────
+Write-Info "Step 5/5: Environment summary"
 Write-Host ""
 
 $pad = "Python:".PadRight(16)
@@ -356,17 +371,11 @@ if (Test-Path $configPath) {
 Write-Host ""
 Write-OK "Installation complete!"
 Write-Host ""
-
-# Show activation hint
-Write-Host "  To use 'mulagent' command, first activate the virtual environment:" -ForegroundColor White
+Write-Host "  You can now use 'mulagent' directly in any PowerShell window:" -ForegroundColor White
 Write-Host ""
-Write-Host "    .\.venv\Scripts\Activate.ps1" -ForegroundColor Cyan
-Write-Host "    mulagent init                  # first-time config" -ForegroundColor DarkGray
-Write-Host "    mulagent                       # launch TUI" -ForegroundColor DarkGray
-Write-Host "    mulagent --headless            # launch headless REPL" -ForegroundColor DarkGray
-Write-Host ""
-Write-Host "  Or use full path without activating:" -ForegroundColor White
-Write-Host "    $Mulagent" -ForegroundColor Cyan
+Write-Host "    mulagent init              # first-time config" -ForegroundColor Cyan
+Write-Host "    mulagent                   # launch TUI" -ForegroundColor Cyan
+Write-Host "    mulagent --headless        # launch headless REPL" -ForegroundColor Cyan
 Write-Host ""
 
 # ── Infra-only mode ──────────────────────────────────────────

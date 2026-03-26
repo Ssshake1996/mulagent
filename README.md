@@ -29,8 +29,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 安装脚本会自动完成：
 1. 创建 Python 虚拟环境 (`.venv`)
 2. 安装依赖包
-3. 交互式询问是否安装数据库（PostgreSQL/Redis/Qdrant，**全部可选**）
-4. 启动 CLI
+3. 注册 `mulagent` 到系统 PATH（Windows），安装后可在任意终端直接使用
+4. 交互式询问是否安装数据库（PostgreSQL/Redis/Qdrant，**全部可选**）
+5. 首次自动运行配置向导，然后启动 CLI
 
 > 核心功能仅需 **Python 3.10+** 和 **LLM API Key**，不安装任何数据库也能正常使用。
 
