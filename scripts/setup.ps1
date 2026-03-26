@@ -26,7 +26,7 @@ param(
     [switch]$Help
 )
 
-# Do NOT use "Stop" globally — it causes external commands to throw on non-zero exit
+# Do NOT use "Stop" globally -- it causes external commands to throw on non-zero exit
 $ErrorActionPreference = "Continue"
 
 # ── Paths ────────────────────────────────────────────────────
@@ -139,8 +139,8 @@ if ($Status) {
     Write-SvcStatus "API Server" $apiOk
 
     Write-Host ""
-    if (-not $redisOk) { Write-Host "  Redis not available — checkpoint & cache disabled" -ForegroundColor DarkGray }
-    if (-not $qdrantOk) { Write-Host "  Qdrant not available — using in-memory fallback" -ForegroundColor DarkGray }
+    if (-not $redisOk) { Write-Host "  Redis not available -- checkpoint & cache disabled" -ForegroundColor DarkGray }
+    if (-not $qdrantOk) { Write-Host "  Qdrant not available -- using in-memory fallback" -ForegroundColor DarkGray }
     Write-Host ""
     Exit-WithPause 0
 }
@@ -350,18 +350,27 @@ if (Test-Path $configPath) {
     Write-Host "found" -ForegroundColor Green
 } else {
     Write-Host "not found" -ForegroundColor Yellow -NoNewline
-    Write-Host " — run 'mulagent init' to configure"
+    Write-Host " -- run init to configure (see below)"
 }
 
 Write-Host ""
 Write-OK "Installation complete!"
 Write-Host ""
 
+# Show activation hint
+Write-Host "  To use 'mulagent' command, first activate the virtual environment:" -ForegroundColor White
+Write-Host ""
+Write-Host "    .\.venv\Scripts\Activate.ps1" -ForegroundColor Cyan
+Write-Host "    mulagent init                  # first-time config" -ForegroundColor DarkGray
+Write-Host "    mulagent                       # launch TUI" -ForegroundColor DarkGray
+Write-Host "    mulagent --headless            # launch headless REPL" -ForegroundColor DarkGray
+Write-Host ""
+Write-Host "  Or use full path without activating:" -ForegroundColor White
+Write-Host "    $Mulagent" -ForegroundColor Cyan
+Write-Host ""
+
 # ── Infra-only mode ──────────────────────────────────────────
 if ($Infra) {
-    Write-Info "To launch CLI:"
-    Write-Host "  $Mulagent"
-    Write-Host "  $Mulagent --headless"
     Exit-WithPause 0
 }
 
