@@ -343,11 +343,18 @@ async def _read_file(params: dict[str, Any], **deps: Any) -> str:
         limit = params.get("limit", 200)
 
         lines = content.split("\n")
+        total_lines = len(lines)
         selected = lines[offset:offset + limit]
 
-        result = "\n".join(f"{i + offset + 1:4d}| {line}" for i, line in enumerate(selected))
-        if offset + limit < len(lines):
-            result += f"\n... ({len(lines) - offset - limit} more lines)"
+        # Header: show file stats so LLM can plan reads for large files
+        header = f"[{path.name}: {total_lines} lines, {size} bytes"
+        if total_lines > limit:
+            header += f", showing lines {offset + 1}-{min(offset + limit, total_lines)}"
+        header += "]\n"
+
+        result = header + "\n".join(f"{i + offset + 1:4d}| {line}" for i, line in enumerate(selected))
+        if offset + limit < total_lines:
+            result += f"\n... ({total_lines - offset - limit} more lines, use offset={offset + limit} to continue)"
         return result
     except Exception as e:
         return f"Read error: {e}"
@@ -451,7 +458,7 @@ WEB_FETCH = ToolDef(
 
 READ_FILE = ToolDef(
     name="read_file",
-    description="Read content from a local file. Supports offset/limit for large files.",
+    description="Read content from a local file. Output includes total line count. For large files (>200 lines), use offset/limit to read in sections rather than reading the whole file multiple times.",
     parameters={
         "type": "object",
         "properties": {

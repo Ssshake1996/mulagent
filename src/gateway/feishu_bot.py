@@ -373,6 +373,12 @@ class ProgressTracker:
         if action == "tool_call" and detail:
             label = _TOOL_LABELS.get(detail, detail)
             self.actions.append(f"🔧 [{round_num}] {label}")
+        elif action == "step_text" and detail:
+            # LLM's intermediate text (todolist items, step descriptions)
+            # Only show meaningful lines, skip tool call descriptions
+            line = detail.strip().split("\n")[0][:80]
+            if line and not line.startswith("{") and not line.startswith("["):
+                self.actions.append(f"📋 {line}")
         elif action == "thinking":
             pass  # Just update round number
 
@@ -608,6 +614,9 @@ _HELP_TEXT = """\
 | `/topics` | 查看所有话题（热/冷/已召回） |
 | `/recall <关键词>` | 按关键词召回归档话题 |
 | `/compress` | 手动触发智能上下文压缩 |
+| `/directives` | 查看持久化约束规则 |
+| `/directives add <规则>` | 添加约束（如"删除前要确认"） |
+| `/directives del <序号>` | 删除指定约束 |
 | `/clear` | 清除当前会话所有对话 |
 | `/help` | 显示本帮助 |
 
@@ -776,6 +785,42 @@ def _on_message(data) -> None:
             sid = _session_mgr.get_or_create(user_id, chat_id)
             _session_mgr.conv_store.clear_turns(sid)
             _reply_card(message_id, "✅ 当前会话已清空。")
+        return
+
+    # Handle /directives command
+    if cmd == "/directives" or cmd == "/directives list":
+        if _session_mgr:
+            directives = _session_mgr.conv_store.load_persistent_directives(user_id)
+            if not directives:
+                _reply_card(message_id, "当前没有持久化约束规则。\n\n使用 `/directives add <规则>` 添加。")
+            else:
+                lines = ["**持久化约束规则**\n"]
+                for i, d in enumerate(directives):
+                    lines.append(f"`[{i}]` {d}")
+                lines.append(f"\n共 {len(directives)} 条，使用 `/directives del <序号>` 删除")
+                _reply_card(message_id, "\n".join(lines))
+        return
+
+    if cmd.startswith("/directives add "):
+        rule = text.strip().split(maxsplit=2)[2].strip() if len(text.strip().split(maxsplit=2)) > 2 else ""
+        if _session_mgr and rule:
+            if _session_mgr.conv_store.add_persistent_directive(user_id, rule):
+                _reply_card(message_id, f"✅ 已添加约束：{rule}")
+            else:
+                _reply_card(message_id, "该约束已存在。")
+        elif not rule:
+            _reply_card(message_id, "用法：`/directives add <规则>`\n\n示例：`/directives add 删除文件前要经过我确认`")
+        return
+
+    if cmd.startswith("/directives del "):
+        try:
+            idx = int(text.strip().split()[-1])
+            if _session_mgr and _session_mgr.conv_store.remove_persistent_directive(user_id, idx):
+                _reply_card(message_id, f"✅ 已删除约束 [{idx}]")
+            else:
+                _reply_card(message_id, f"无效序号 [{idx}]，使用 `/directives` 查看列表。")
+        except ValueError:
+            _reply_card(message_id, "用法：`/directives del <序号>`")
         return
 
     session_id = _session_mgr.get_or_create(user_id, chat_id) if _session_mgr else "fallback"

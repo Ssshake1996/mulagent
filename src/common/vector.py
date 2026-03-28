@@ -91,13 +91,19 @@ def _get_embedding_config() -> tuple[str, str, str, int] | None:
     if not api_key or not base_url:
         return None
 
-    # Normalize base_url: ensure it has compatible embedding path
-    # DashScope (both coding.dashscope and dashscope) needs /compatible-mode/v1
-    if "dashscope" in base_url and "compatible-mode" not in base_url:
-        # Preserve the original host (coding.dashscope vs dashscope)
-        from urllib.parse import urlparse
-        parsed = urlparse(base_url)
-        base_url = f"{parsed.scheme}://{parsed.hostname}/compatible-mode/v1"
+    # Normalize base_url for embedding:
+    # - coding.dashscope.aliyuncs.com does NOT support embedding API (404)
+    #   Must redirect to dashscope.aliyuncs.com for embedding
+    # - Ensure /compatible-mode/v1 path suffix
+    if "dashscope" in base_url:
+        if "coding.dashscope" in base_url:
+            # coding.dashscope only supports LLM, not embedding — redirect
+            base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            logger.debug("Embedding: redirected coding.dashscope → dashscope for embedding")
+        elif "compatible-mode" not in base_url:
+            from urllib.parse import urlparse
+            parsed = urlparse(base_url)
+            base_url = f"{parsed.scheme}://{parsed.hostname}/compatible-mode/v1"
 
     return ecfg.model, api_key, base_url, ecfg.dimensions
 

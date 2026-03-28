@@ -440,6 +440,15 @@ async def react_loop(
             # Add AI message to conversation (this MUST come before ToolMessages)
             conversation.append(response)
 
+            # ── Report intermediate text (step descriptions/todolist) ──
+            if on_progress and response.content:
+                text_preview = response.content.strip()[:120]
+                if text_preview:
+                    try:
+                        await on_progress(round_num + 1, "step_text", text_preview)
+                    except Exception:
+                        pass
+
             # ── Smart repeat / loop detection ──
             call_sig = "|".join(
                 f"{tc['name']}:{sorted(tc.get('args', {}).items())}"
@@ -684,7 +693,7 @@ async def react_loop(
                 )))
 
         # Max rounds reached
-        return await _force_conclude_llm(memory, user_input, llm)
+        return await _force_conclude_llm(memory, user_input, llm, strategies_tried)
 
     def _populate_meta():
         """Copy memory metadata into result_meta for the caller."""
@@ -814,7 +823,8 @@ def _trim_conversation(conversation: list, max_pairs: int = 4) -> list:
 
 
 async def _force_conclude_llm(
-    memory: WorkingMemory, user_input: str, llm: Any
+    memory: WorkingMemory, user_input: str, llm: Any,
+    strategies_tried: list[dict] | None = None,
 ) -> str:
     """Use LLM to synthesize a final answer from collected facts."""
     from langchain_core.messages import HumanMessage, SystemMessage
@@ -830,20 +840,41 @@ async def _force_conclude_llm(
     if memory.directives:
         directives_text = "\n用户约束: " + "; ".join(memory.directives)
 
+    # Build progress summary from strategies tried
+    progress_text = ""
+    if strategies_tried:
+        completed = [s for s in strategies_tried if s["outcome"] == "ok"]
+        failed = [s for s in strategies_tried if s["outcome"] == "fail"]
+        progress_text = f"\n\n执行进度: {len(completed)} 步成功, {len(failed)} 步失败"
+        if completed:
+            progress_text += "\n已完成的操作:\n" + "\n".join(
+                f"  ✅ {s['tool']}({s['args_summary']})" for s in completed[-10:]
+            )
+        if failed:
+            progress_text += "\n失败的操作:\n" + "\n".join(
+                f"  ❌ {s['tool']}({s['args_summary']})" for s in failed[-5:]
+            )
+
+    # Build state summary
+    state_text = ""
+    if memory.state:
+        state_text = f"\n\n当前状态: {json.dumps(memory.state, ensure_ascii=False)}"
+
     messages = [
         SystemMessage(content=(
-            "你是一个任务助手。用户提出了一个任务，你的同事已经收集了一些信息但未能在限定时间内完成。\n"
-            "请根据已收集的信息，给出最好的回答。\n"
+            "你是一个任务助手。用户提出了一个任务，执行过程已达到轮数上限。\n"
+            "请根据已收集的信息和执行进度，给出完整的总结报告。\n"
             "要求：\n"
             "- 用和用户相同的语言回答\n"
-            "- 结构化、易读\n"
-            "- 如果信息不完整，诚实说明\n"
+            "- 明确说明：已完成了哪些步骤、还有哪些未完成\n"
+            "- 如果有具体的执行结果（文件已创建、数据已处理等），列出来\n"
+            "- 如果有未完成的步骤，给出下一步建议\n"
             "- 不要编造信息"
         )),
         HumanMessage(content=(
-            f"用户任务: {user_input}{directives_text}\n\n"
+            f"用户任务: {user_input}{directives_text}{progress_text}{state_text}\n\n"
             f"已收集的信息:\n{facts_text}\n\n"
-            "请根据以上信息给出最好的回答。"
+            "请根据以上信息给出完整的执行报告。"
         )),
     ]
 

@@ -112,20 +112,28 @@ async def _self_evaluate(
 
     messages = [
         SystemMessage(content=(
-            "你是一个回答质量评估器。请评估以下任务回答的质量。\n"
+            "你是一个回答质量评估器。请评估以下任务回答的质量。\n\n"
+            "评分标准：\n"
+            "- score: 1=完全没回答 2=尝试了但明显不完整 3=基本回答了核心问题 4=较完整，有细节 5=全面完整\n"
+            "- completeness: 1=没开始 2=做了一部分 3=核心部分完成 4=大部分完成 5=全部完成\n"
+            "- accuracy_confidence: 1=纯猜测 2=不太确定 3=基于部分事实 4=有依据 5=有工具验证\n\n"
+            "重要：\n"
+            "- 如果回答包含具体数据、代码、文件操作结果，completeness 应 ≥3\n"
+            "- 如果回答以'请确认'/'是否继续'结尾但已完成主要工作，score 仍应 ≥3\n"
+            "- 如果回答用了工具并展示了结果，accuracy_confidence 应 ≥4\n\n"
             "返回 JSON 格式：\n"
             "{\n"
-            '  "score": 1-5,           // 1=很差, 5=很好\n'
-            '  "completeness": 1-5,    // 是否完整回答了问题\n'
-            '  "accuracy_confidence": 1-5, // 你对答案准确性的信心\n'
-            '  "has_sources": true/false,  // 是否包含来源引用\n'
-            '  "improvement": "..."    // 一句话说明如何改进（如果需要）\n'
+            '  "score": 1-5,\n'
+            '  "completeness": 1-5,\n'
+            '  "accuracy_confidence": 1-5,\n'
+            '  "has_sources": true/false,\n'
+            '  "improvement": "..."\n'
             "}\n"
             "只返回 JSON，不要解释。"
         )),
         HumanMessage(content=(
             f"用户任务: {user_input[:300]}\n\n"
-            f"回答: {output[:800]}"
+            f"回答: {output[:1200]}"
         )),
     ]
 
