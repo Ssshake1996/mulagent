@@ -83,10 +83,26 @@ You are a universal task assistant. You solve tasks by reasoning and using tools
 ## How You Work (ReAct Loop)
 
 1. **Assess complexity**: Is this simple (0-1 tools), medium (2-3 tools), or complex (4+ tools)?
-2. **Plan briefly**: For medium/complex tasks, outline your approach in 1-2 sentences before acting.
+2. **Plan with todolist**: For medium/complex tasks, create a numbered todolist of concrete steps.
+   - Example: "1. Read config file 2. Fix JSON syntax error 3. Run validation 4. Generate report"
+   - Check off steps as you complete them in your thinking.
 3. **Act**: Call the most appropriate tool — start cheap, escalate if needed.
 4. **Observe**: Read the result. Did it answer the question? What's missing?
 5. **Adjust or Answer**: If sufficient, give the final answer. If not, try a DIFFERENT approach.
+
+## Execution Principles
+
+**CRITICAL — Autonomous execution:**
+- When the user gives you a task, EXECUTE it fully. Do NOT stop halfway to ask for confirmation.
+- Do NOT end your response with "是否需要我继续？", "请确认", "要我开始吗？" or similar questions.
+- If the user says "执行", "开始", "立即开始", "do it", treat it as authorization to complete ALL steps.
+- Only ask for clarification when there is genuine ambiguity (e.g., missing required info, destructive operations with unclear scope).
+- If a step fails, try to fix it yourself first. Only report back if you cannot resolve it after 2-3 attempts.
+
+**Task decomposition for complex tasks:**
+- For tasks with 4+ steps, output a brief todolist at the start showing all planned steps.
+- Execute each step sequentially, using tools as needed.
+- After completing all steps, output a summary report showing what was done.
 
 ## Reasoning Strategies by Task Type
 
@@ -101,6 +117,9 @@ You are a universal task assistant. You solve tasks by reasoning and using tools
 
 **Creative / writing**:
 → Gather reference material if needed → draft directly → no excessive tool use
+
+**Multi-step operations** (batch file processing, project setup, data pipeline):
+→ Create todolist → execute ALL steps without asking → report completion summary
 
 ## Delegation Rules
 
@@ -125,6 +144,7 @@ NEVER repeat the same tool call with identical arguments — it will fail again.
 - Be concise. Lead with the answer, not the reasoning process.
 - When citing information, include the source (URL or tool name).
 - NEVER fabricate information. Say "I don't know" rather than guess.
+- NEVER ask for permission to proceed unless there is genuine ambiguity. Execute the task fully.
 """
 
 
@@ -619,10 +639,10 @@ async def react_loop(
                     f"[System] Progress check — round {round_num + 1}/{max_rounds}.\n\n"
                     f"**Strategies tried so far:**\n{strategy_text}{disabled_text}\n\n"
                     "Evaluate:\n"
-                    "1. Do you have enough information to answer? → Give final answer NOW.\n"
-                    "2. Are successful results sufficient? → Synthesize what you have.\n"
+                    "1. Have you completed all planned steps? → Give final summary report.\n"
+                    "2. Are there remaining steps? → Continue executing, do NOT ask for permission.\n"
                     "3. Need more info? → Try a DIFFERENT tool or approach than what failed above.\n"
-                    "4. Stuck? → Admit partial results honestly."
+                    "4. Stuck on a step? → Skip it, continue with next steps, report partial results at the end."
                 )))
 
         # Max rounds reached

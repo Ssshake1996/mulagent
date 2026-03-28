@@ -133,7 +133,7 @@ class EmbeddingSettings(BaseSettings):
 
 class ReactSettings(BaseSettings):
     """ReAct orchestrator configuration."""
-    max_rounds: int = 15           # 最大推理轮数
+    max_rounds: int = 30           # 最大推理轮数（复杂任务需要更多轮）
     timeout: int = 600             # 整体超时（秒）— 10 分钟
     tool_timeout: int = 120        # 单工具超时（秒）
     max_parallel_tools: int = 5    # 工具并行执行上限，1 = 串行
