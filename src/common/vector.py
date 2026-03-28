@@ -37,7 +37,7 @@ def get_qdrant_client(in_memory: bool = False) -> QdrantClient:
 
     settings = get_settings()
     try:
-        client = QdrantClient(url=settings.qdrant.url, timeout=3)
+        client = QdrantClient(url=settings.qdrant.url, timeout=3, check_compatibility=False)
         client.get_collections()  # connectivity check
         logger.info("Connected to Qdrant at %s", settings.qdrant.url)
         return client

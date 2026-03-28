@@ -7,15 +7,16 @@ from typing import Any
 
 from tools.base import ToolDef
 from tools.discovery import WEB_SEARCH, KNOWLEDGE_RECALL
-from tools.injection import WEB_FETCH, READ_FILE, LIST_DIR
+from tools.injection import WEB_FETCH, READ_FILE, LIST_DIR, GLOB_SEARCH, GREP_SEARCH
 from tools.generation import EXECUTE_SHELL, CODE_RUN, WRITE_FILE, EDIT_FILE
-from tools.isolation import DELEGATE
+from tools.isolation import DELEGATE, CHECK_BACKGROUND
 from tools.research import DEEP_RESEARCH
 from tools.docs_lookup import DOCS_LOOKUP
 from tools.codemap import CODEMAP
 from tools.browser import BROWSER_FETCH
 from tools.sql_query import SQL_QUERY
 from tools.git_tools import GIT_OPS, GITHUB_OPS
+from tools.task_manager import TODO_MANAGE, PLAN_SUBMIT
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +27,14 @@ ALL_TOOLS: list[ToolDef] = [
     WEB_FETCH,
     READ_FILE,
     LIST_DIR,
+    GLOB_SEARCH,
+    GREP_SEARCH,
     EXECUTE_SHELL,
     CODE_RUN,
     WRITE_FILE,
     EDIT_FILE,
     DELEGATE,
+    CHECK_BACKGROUND,
     DEEP_RESEARCH,
     DOCS_LOOKUP,
     CODEMAP,
@@ -38,6 +42,8 @@ ALL_TOOLS: list[ToolDef] = [
     SQL_QUERY,
     GIT_OPS,
     GITHUB_OPS,
+    TODO_MANAGE,
+    PLAN_SUBMIT,
 ]
 
 

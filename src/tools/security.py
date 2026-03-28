@@ -109,6 +109,7 @@ def detect_injection(text: str) -> list[str]:
 def pre_tool_hook(tool_name: str, args: dict, directives: list[str]) -> str | None:
     """Pre-execution hook: check if tool call violates any directive.
 
+    Runs both directive checks and user-configured shell hooks.
     Returns an error message if blocked, None if allowed.
     """
     args_str = str(args).lower()
@@ -129,8 +130,12 @@ def pre_tool_hook(tool_name: str, args: dict, directives: list[str]) -> str | No
 
         # Block scope violations
         if "只" in d_lower or "仅" in d_lower or "不要" in d_lower:
-            # These are context-dependent, just log a warning
             logger.debug("Directive scope check for '%s': %s", tool_name, directive)
+
+    # ── User-configured shell hooks ──
+    result = _run_user_hook("pre", tool_name, args)
+    if result:
+        return result
 
     return None
 
@@ -138,14 +143,102 @@ def pre_tool_hook(tool_name: str, args: dict, directives: list[str]) -> str | No
 def post_tool_hook(tool_name: str, result: str) -> str:
     """Post-execution hook: sanitize tool output.
 
-    Redacts any sensitive data that appears in tool results.
+    Runs sensitive data redaction and user-configured shell hooks.
     """
     findings = scan_sensitive(result)
     if findings:
         logger.warning("Sensitive data found in %s output: %s",
                        tool_name, [f["type"] for f in findings])
         result = redact_sensitive(result)
+
+    # ── User-configured shell hooks ──
+    hook_result = _run_user_hook("post", tool_name, {"result_length": len(result)})
+    if hook_result:
+        logger.info("Post-hook for %s: %s", tool_name, hook_result[:100])
+
     return result
+
+
+# ── User-configurable shell hooks ──────────────────────────────────
+
+_hooks_cache: dict | None = None
+
+
+def _load_hooks() -> dict:
+    """Load user-configured hooks from settings.yaml.
+
+    Format in settings.yaml:
+    ```yaml
+    hooks:
+      pre:
+        write_file: "cp {path} {path}.bak 2>/dev/null; true"
+        execute_shell: "echo 'executing: {command}' >> /tmp/mulagent_audit.log"
+      post:
+        write_file: "echo 'wrote {path}' >> /tmp/mulagent_audit.log"
+    ```
+    """
+    global _hooks_cache
+    if _hooks_cache is not None:
+        return _hooks_cache
+
+    try:
+        from common.config import get_settings
+        settings = get_settings()
+        raw = getattr(settings, "hooks", None)
+        if raw and isinstance(raw, dict):
+            _hooks_cache = raw
+        else:
+            _hooks_cache = {}
+    except Exception:
+        _hooks_cache = {}
+
+    return _hooks_cache
+
+
+def _run_user_hook(phase: str, tool_name: str, args: dict) -> str | None:
+    """Run a user-configured shell hook if one exists for this tool.
+
+    For pre hooks: returns error message if hook exits non-zero (blocks execution).
+    For post hooks: returns stdout (informational only).
+    Returns None if no hook configured or hook succeeds silently.
+    """
+    import subprocess
+
+    hooks = _load_hooks()
+    phase_hooks = hooks.get(phase, {})
+
+    if not isinstance(phase_hooks, dict):
+        return None
+
+    cmd_template = phase_hooks.get(tool_name)
+    if not cmd_template:
+        return None
+
+    # Substitute args into template
+    try:
+        cmd = cmd_template
+        for key, val in args.items():
+            cmd = cmd.replace(f"{{{key}}}", str(val)[:200])
+    except Exception:
+        cmd = cmd_template
+
+    try:
+        result = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=10,
+        )
+        if phase == "pre" and result.returncode != 0:
+            return (
+                f"[BLOCKED by {phase} hook] {tool_name}: "
+                f"{result.stderr.strip()[:200] or f'hook exited with code {result.returncode}'}"
+            )
+        if result.stdout.strip():
+            return result.stdout.strip()[:200]
+    except subprocess.TimeoutExpired:
+        logger.warning("Hook timed out: %s %s %s", phase, tool_name, cmd[:50])
+    except Exception as e:
+        logger.debug("Hook failed: %s", e)
+
+    return None
 
 
 # ── Standalone security scan tool ─────────────────────────────────────

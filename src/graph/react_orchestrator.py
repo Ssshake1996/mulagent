@@ -48,6 +48,36 @@ def _should_auto_complete(user_input: str) -> bool:
     lower = user_input.lower()
     return any(signal in lower for signal in _AUTO_COMPLETE_SIGNALS)
 
+# ── Structured Audit Logger ───────────────────────────────────────
+
+_audit_logger = logging.getLogger("mulagent.audit")
+
+
+def _audit_tool_call(
+    tool_name: str, args: dict, round_num: int,
+    elapsed: float, is_error: bool, result_len: int,
+    trace_id: str = "",
+) -> None:
+    """Write a structured JSON audit log entry for each tool call.
+
+    Logged at INFO level to a dedicated 'mulagent.audit' logger,
+    so it can be routed to a separate file or sink.
+    """
+    entry = {
+        "event": "tool_call",
+        "tool": tool_name,
+        "args_summary": _brief_args(args)[:120] if args else "",
+        "round": round_num + 1,
+        "elapsed_s": round(elapsed, 3),
+        "status": "error" if is_error else "ok",
+        "result_chars": result_len,
+    }
+    if trace_id:
+        entry["trace_id"] = trace_id
+
+    _audit_logger.info(json.dumps(entry, ensure_ascii=False))
+
+
 # ── System Prompt ─────────────────────────────────────────────────
 
 ORCHESTRATOR_PROMPT = """\
@@ -61,13 +91,14 @@ You handle diverse tasks: code, research, writing, data processing, file operati
 
 **Tool cost guide:**
 - ⚡ knowledge_recall: instant, free — always try FIRST for known patterns
-- ⚡ read_file / list_dir: instant, free — read files or browse directories
+- ⚡ read_file / list_dir / glob_search / grep_search: instant, free — file discovery and content search
 - ⚡ codemap: instant, free — extract code structure (classes, functions, routes) via AST
+- ⚡ todo_manage: instant — manage your task list (create/done/list)
 - 🔍 web_search: 2-5s, moderate — use when knowledge_recall has no match
 - 🌐 web_fetch: 3-10s, moderate — use when you have a specific URL
 - 📚 docs_lookup: 3-10s, moderate — fetch official library/framework documentation
 - 🔧 execute_shell / code_run: 5-30s, heavy — use for computation, not lookup. code_run supports Python/JS/TS/Go/Rust/Java.
-- ✏️ edit_file: instant — surgical find-and-replace (safer than write_file for small changes)
+- ✏️ edit_file: instant — surgical find-and-replace, supports replace_all for batch rename (safer than write_file)
 - ✏️ write_file: instant — full file write (use for new files or complete rewrites only)
 - 🌐 browser_fetch: 10-30s, heavy — JS-rendered page fetch (for SPAs/dynamic content)
 - 🗄️ sql_query: 2-30s, moderate — read-only SQL. Use 'schema' query to discover tables.
@@ -84,18 +115,28 @@ You handle diverse tasks: code, research, writing, data processing, file operati
 
 **Tool selection — what NOT to do:**
 - Do NOT use execute_shell to read files (cat/head/tail) — use read_file instead
-- Do NOT use execute_shell for grep/find — use read_file with offset/limit or list_dir
+- Do NOT use execute_shell for grep/find/ls — use grep_search, glob_search, or list_dir
 - Do NOT use write_file when edit_file can make the change (prefer surgical edits over full rewrites)
 - Do NOT delegate tasks you can handle in ≤3 tool calls
 - Do NOT repeat the same tool call with identical arguments — it will produce the same result
+- Do NOT use execute_shell for file search patterns — use glob_search("**/*.py") instead of execute_shell("find . -name '*.py'")
+- Do NOT use execute_shell for content search — use grep_search(pattern="def main", file_glob="*.py") instead of execute_shell("grep -r 'def main' *.py")
+- Do NOT create tasks in your text output — use todo_manage(action="create") to make them trackable
+
+## Experience System — Learn from History
+
+Before starting complex tasks, use knowledge_recall to check if similar tasks were done before.
+Past experiences contain: what strategy worked, what tools to use, what to avoid, estimated rounds.
+This saves time and avoids repeating past mistakes.
 
 ## How You Work (ReAct Loop)
 
-1. **Assess complexity**: simple (0-1 tools) / medium (2-3 tools) / complex (4+ tools)?
-2. **Plan**: For complex tasks, create a numbered todolist FIRST. Check off steps as you go.
-3. **Act**: Call tools — start cheap, escalate if needed. When calls are independent, request them in parallel.
-4. **Observe**: Read the result. What did you learn? What's still missing?
-5. **Continue or conclude**: All steps done → summary report. More steps → execute next. Do NOT ask permission.
+1. **Check experience**: For non-trivial tasks, call knowledge_recall first to find relevant patterns.
+2. **Assess complexity**: simple (0-1 tools) / medium (2-3 tools) / complex (4+ tools)?
+3. **Plan**: For complex tasks (4+ steps), use todo_manage to create a task list. Mark each done as you go.
+4. **Act**: Call tools — start cheap, escalate if needed. When calls are independent, request them in parallel.
+5. **Observe**: Read the result. What did you learn? What's still missing?
+6. **Continue or conclude**: All steps done → summary report. More steps → execute next. Do NOT ask permission.
 
 ## Autonomous Execution — CRITICAL
 
@@ -108,9 +149,10 @@ You handle diverse tasks: code, research, writing, data processing, file operati
 - NEVER end with questions like "是否需要我...?", "您需要我...?", "请确认". Instead, execute and report results.
 
 **Task decomposition:**
-- For complex tasks (4+ steps): output a brief numbered todolist → execute ALL steps → output summary report.
-- For each step: use the appropriate tool(s), record key results, move to next step.
+- For complex tasks (4+ steps): call todo_manage(action="create", items=[...]) to create a tracked plan.
+- For each step: use the appropriate tool(s), then call todo_manage(action="done", task_id=N).
 - If a step produces important data you'll need later, write it down explicitly — context may be compressed in long tasks.
+- The task list is shown in the context window so you can always see your progress.
 
 ## Action Safety — Know What's Reversible
 
@@ -537,7 +579,8 @@ async def react_loop(
                 _t_start = time.perf_counter()
                 try:
                     t_deps = {**deps, "llm": llm, "tools": tool_defs,
-                              "parent_directives": list(memory.directives)}
+                              "parent_directives": list(memory.directives),
+                              "memory": memory}
                     raw = await asyncio.wait_for(
                         t_def.fn(t_args, **t_deps), timeout=tool_timeout,
                     )
@@ -575,6 +618,13 @@ async def react_loop(
                 except Exception:
                     pass
 
+                # ── Structured audit log ──
+                _audit_tool_call(
+                    tool_name=t_name, args=t_args, round_num=round_num,
+                    elapsed=_t_elapsed, is_error=_is_err,
+                    result_len=len(compressed), trace_id=_trace_id,
+                )
+
                 # Store in cache (only successful, non-error results)
                 if cache_key and not _is_err:
                     _tool_cache[cache_key] = compressed
@@ -602,6 +652,15 @@ async def react_loop(
             for tc, compressed in exec_results:
                 tool_name = tc["name"]
                 tool_id = tc.get("id", f"call_{round_num}_{tool_name}")
+
+                # ── Plan mode: if plan_submit was called, return plan for user review ──
+                from tools.task_manager import PLAN_PENDING_MARKER
+                if PLAN_PENDING_MARKER in compressed:
+                    plan_text = compressed.replace(PLAN_PENDING_MARKER, "").strip()
+                    if result_meta is not None:
+                        result_meta["plan_pending"] = True
+                    return plan_text
+
                 memory.add_fact(tool_name, compressed, round_num)
                 memory.update_state("last_tool", tool_name)
                 memory.update_state("rounds_completed", round_num + 1)

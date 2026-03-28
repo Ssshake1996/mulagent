@@ -22,11 +22,13 @@
                               ┌──────────┐   ┌──────────┐    ┌──────────────┐
                               │ 搜索/检索 │   │ 文件/代码 │    │   delegate   │
                               │ web_search│   │ read_file │    │  (子 agent)  │
-                              │ knowledge │   │ code_run  │    │  12 种角色    │
-                              └──────────┘   │ git_ops   │    └──────┬───────┘
-                                              │ sql_query │           │
-                                              │ browser   │      再次进入
-                                              └──────────┘     ReAct Loop
+                              │ knowledge │   │ glob/grep │    │  12 种角色    │
+                              │ glob/grep │   │ code_run  │    │  background  │
+                              └──────────┘   │ git_ops   │    │  worktree    │
+                                              │ sql_query │    └──────┬───────┘
+                                              │ browser   │           │
+                                              └──────────┘      再次进入
+                                                               ReAct Loop
 ```
 
 **核心设计**：
@@ -54,14 +56,15 @@ mul-agent/
 │   │   ├── conversation.py        #   多轮对话管理 + 实体提取 + 上下文 CRUD
 │   │   ├── context_compressor.py  #   三维智能上下文压缩（语义分类/话题归档/相关性压缩）
 │   │   └── checkpoint.py          #   Redis 断点续作
-│   ├── tools/                     # 工具层（17 个工具）
+│   ├── tools/                     # 工具层（22 个工具）
 │   │   ├── registry.py            #   工具注册表
 │   │   ├── base.py                #   ToolDef 基类
-│   │   ├── isolation.py           #   delegate 子 agent + 知识注入
+│   │   ├── isolation.py           #   delegate 子 agent（含后台执行 + worktree 隔离）+ check_background
 │   │   ├── skill_loader.py        #   Skill 自动发现与注册
 │   │   ├── discovery.py           #   web_search, knowledge_recall
-│   │   ├── injection.py           #   web_fetch, read_file, list_dir
-│   │   ├── generation.py          #   execute_shell, code_run, write_file, edit_file
+│   │   ├── injection.py           #   web_fetch, read_file, list_dir, glob_search, grep_search
+│   │   ├── generation.py          #   execute_shell, code_run, write_file, edit_file（支持 replace_all）
+│   │   ├── task_manager.py        #   todo_manage, plan_submit（计划模式）
 │   │   ├── research.py            #   deep_research
 │   │   ├── codemap.py             #   codemap (AST 分析)
 │   │   ├── docs_lookup.py         #   docs_lookup
@@ -70,7 +73,7 @@ mul-agent/
 │   │   ├── git_tools.py           #   git_ops, github_ops
 │   │   ├── knowledge_rag.py       #   Chunk + Embedding RAG
 │   │   ├── sandbox.py             #   Docker 沙箱执行
-│   │   ├── security.py            #   工具安全钩子
+│   │   ├── security.py            #   工具安全钩子 + 用户可配置 Shell Hooks
 │   │   └── plugins.py             #   插件系统
 │   ├── gateway/                   # 接入层
 │   │   ├── adapter.py             #   SessionManager + 进度协议（v0.5.0 新增）
@@ -183,29 +186,38 @@ react_loop(user_input, tools, llm)
 
 **Skill 角色**通过 `skill_loader.py` 自动发现，只需放入 skill 目录即可注册（见 10.4）。
 
+**后台执行**：`delegate(background=true)` 使用 `asyncio.ensure_future()` 异步执行子 agent，返回 `bg_id`，通过 `check_background` 工具查询状态和结果。
+
+**Worktree 隔离**：`delegate(isolation="worktree")` 在临时 Git worktree 中执行子 agent，隔离文件变更。无变更时自动清理 worktree，有变更时保留供用户 review。
+
 ---
 
-## 4. 17 个工具清单
+## 4. 22 个工具清单
 
 | 工具 | 成本 | 用途 |
 |------|------|------|
-| `knowledge_recall` | ⚡ 免费 | 知识库语义检索 |
+| `knowledge_recall` | ⚡ 免费 | 知识库语义检索（含分层经验） |
 | `read_file` | ⚡ 免费 | 读取文件 |
 | `list_dir` | ⚡ 免费 | 浏览目录 |
+| `glob_search` | ⚡ 免费 | 文件名模式匹配搜索 |
+| `grep_search` | ⚡ 免费 | 文件内容正则搜索 |
 | `codemap` | ⚡ 免费 | AST 代码结构提取 |
+| `todo_manage` | ⚡ 免费 | 任务管理（create/done/update/list） |
+| `plan_submit` | ⚡ 免费 | 提交执行计划供用户确认 |
+| `check_background` | ⚡ 免费 | 查询后台子 agent 状态和结果 |
 | `web_search` | 🔍 中等 | 网络搜索 |
 | `web_fetch` | 🌐 中等 | 抓取网页内容 |
 | `docs_lookup` | 📚 中等 | 官方文档查询 |
 | `execute_shell` | 🔧 重 | 执行 Shell 命令 |
 | `code_run` | 🔧 重 | 多语言代码执行 |
 | `write_file` | ✏️ 即时 | 写入文件 |
-| `edit_file` | ✏️ 即时 | 文件局部编辑 |
+| `edit_file` | ✏️ 即时 | 文件局部编辑（支持 replace_all 批量替换） |
 | `browser_fetch` | 🌐 重 | Playwright JS 渲染抓取 |
 | `sql_query` | 🗄️ 中等 | 只读 SQL 查询 |
 | `git_ops` | 🔧 中等 | Git 操作 |
 | `github_ops` | 🐙 中等 | GitHub PR/Issue 管理 |
 | `deep_research` | 🔬 重 | 多角度深度研究 |
-| `delegate` | 🤖 昂贵 | 委派给专业子 agent |
+| `delegate` | 🤖 昂贵 | 委派给专业子 agent（支持后台执行 + worktree 隔离） |
 
 ---
 
@@ -241,18 +253,55 @@ score = success_rate + C × √(ln(total_trials) / tool_trials)
 - 每日衰减因子 0.995，防止马太效应
 - 状态持久化到 Redis
 
-### 5.3 经验循环
+### 5.3 分层分级经验系统
+
+经验按复杂度分为三层，每层有独立的积累、评分和晋升机制：
 
 ```
-任务执行 → 提取经验模式 → 存入 Qdrant 向量库
-     ↑                              │
-     └──── 语义检索相似经验 ←────────┘
+┌─────────────────────────────────────────────────┐
+│  L3 — 领域知识 (Domain)                          │
+│  多个 L2 经验由 LLM 综合提炼而成                    │
+│  tier_bonus = 1.5                                │
+├─────────────────────────────────────────────────┤
+│  L2 — 策略经验 (Strategy)                        │  ← L1 晋升条件：
+│  多步骤、多工具协同的经验                           │    use_count ≥ 5
+│  tier_bonus = 1.2                                │    success_rate ≥ 60%
+├─────────────────────────────────────────────────┤
+│  L1 — 原子经验 (Atomic)                          │
+│  单工具单步骤的经验                                │
+│  tier_bonus = 1.0                                │
+└─────────────────────────────────────────────────┘
 ```
+
+**多维评分公式**：
+```
+effective_score = similarity × quality_score × freshness × use_bonus × success_bonus × tier_bonus
+```
+
+| 维度 | 计算方式 |
+|------|----------|
+| `quality_score` | 初始 0.5，反馈驱动调整 |
+| `freshness` | 30 天半衰期指数衰减 |
+| `use_bonus` | min(1 + use_count × 0.1, 2.0) |
+| `success_bonus` | 0.5 + success_rate × 0.5 |
+| `tier_bonus` | L1=1.0, L2=1.2, L3=1.5 |
+
+**经验生命周期**：
+```
+任务执行 → 自动提取（含 domain_tags, tier 分类）
+    → 去重合并（同层 similarity > 0.85 时合并）
+    → 多维评分排序
+    → 晋升检查（L1→L2: use_count≥5, success_rate≥60%）
+    → 领域综合（多个 L2 → LLM 提炼为 L3）
+```
+
+**飞书 `/experience` 命令**：查看各层经验数量、Top 领域标签、平均质量分。
 
 ### 5.4 用户反馈
 
-- 低评分（1-2）→ LLM 回顾分析 → 存入负面经验
-- 高评分（4-5）→ 提升经验质量权重
+- 低评分（1-2）→ LLM 回顾分析 → 存入负面经验（含 tier 元数据和评分字段）
+- 高评分（4-5）→ 提升经验质量权重 + 更新 success_count + last_used_at
+- 反馈处理后自动触发 `maybe_promote()` 晋升检查
 
 ### 5.5 三维智能上下文压缩
 
@@ -439,11 +488,18 @@ qdrant:
   collection_name: "case_library"
 
 react:
-  max_rounds: 10                      # 最大推理轮次
-  timeout: 180                        # 默认超时（秒，动态超时会根据任务类型覆盖）
-  tool_timeout: 60                    # 单工具超时
+  max_rounds: 30                      # 最大推理轮次（复杂任务需要更多轮）
+  timeout: 600                        # 整体超时（秒）— 10 分钟
+  tool_timeout: 120                   # 单工具超时
   max_parallel_tools: 5               # 并行工具数
   max_conversation_pairs: 4           # 上下文保留轮数
+
+hooks:                                # 用户可配置的工具钩子（可选）
+  pre:
+    write_file: "cp {path} {path}.bak 2>/dev/null; true"     # 写入前自动备份
+    execute_shell: "echo 'exec: {command}' >> /tmp/audit.log" # 审计日志
+  post:
+    write_file: "echo 'wrote {path}' >> /tmp/audit.log"
 
 embedding:
   api_key: "..."                      # Embedding API Key
@@ -546,12 +602,47 @@ metadata:
 | /modify 上下文 CRUD | 用户可精细控制对话上下文，配合智能压缩降低 token 消耗 |
 | PROJECT_ROOT 统一解析 | 环境变量→CWD→源码→~/.mulagent 四级降级，支持全局安装 |
 | 一键安装 + 交互式数据库选择 | 降低入门门槛，按需安装基础设施，venv 隔离避免依赖冲突 |
+| 分层分级经验系统 (L1/L2/L3) | 区分原子经验/策略经验/领域知识，自动晋升和综合，提升经验复用质量 |
+| 计划模式 (plan_submit) | 复杂任务先提交计划供用户确认，避免盲目执行 |
+| 后台子 agent 执行 | 独立任务不阻塞主循环，提升并发效率 |
+| Worktree 隔离 | 文件变更在临时 worktree 中执行，保护主工作目录 |
+| 用户可配置 Shell Hooks | pre/post 钩子支持自定义审计、备份等操作 |
+| 结构化审计日志 | JSON 格式记录每次工具调用，便于合规审计和问题追踪 |
+| glob_search/grep_search 优先于 execute_shell | 专用工具更安全、更高效，减少 Shell 注入风险 |
 
 ---
 
 ## 12. 变更日志
 
-### v0.14.0 — 三维智能上下文压缩（当前）
+### v0.15.0 — Claude Code 对标优化（当前）
+
+对标 Claude Code，从 prompt、tools、架构三个维度补齐 11 项差距：
+
+- **5 个新工具**（17→22）：
+  - `glob_search`：文件名模式匹配（替代 execute_shell + find）
+  - `grep_search`：文件内容正则搜索（替代 execute_shell + grep）
+  - `todo_manage`：任务管理（create/done/update/list），结构化追踪进度
+  - `plan_submit`：提交执行计划，ReAct 循环检测 `PLAN_PENDING_MARKER` 后暂停等待用户确认
+  - `check_background`：查询后台子 agent 状态和结果
+- **edit_file 增强**：新增 `replace_all` 参数，支持批量替换（同名变量重命名等场景）
+- **delegate 增强**：
+  - `background=true`：`asyncio.ensure_future()` 异步执行，返回 bg_id
+  - `isolation="worktree"`：临时 Git worktree 隔离执行，无变更自动清理
+- **用户可配置 Shell Hooks**：`settings.yaml` 中定义 pre/post 工具钩子，支持自动备份、审计日志等
+- **结构化审计日志**：`mulagent.audit` logger，JSON 格式记录每次工具调用（工具名、参数、耗时、状态）
+- **分层分级经验系统**（L1 原子 / L2 策略 / L3 领域）：
+  - 多维评分：quality × freshness(30天半衰期) × use_bonus × success_bonus × tier_bonus
+  - 自动去重合并（同层 similarity > 0.85）
+  - 自动晋升（L1→L2: use_count≥5, success_rate≥60%）
+  - 领域综合（多个 L2 → LLM 提炼为 L3）
+  - 飞书 `/experience` 命令查看统计
+- **Prompt 优化**：
+  - 工具成本指南更新，引导优先使用 glob_search/grep_search
+  - 8 条负向规则（禁止用 execute_shell 搜索文件/内容、禁止文本化任务跟踪等）
+  - 新增经验系统引导：复杂任务前先 knowledge_recall 查询历史经验
+  - ReAct 循环步骤更新：Step 1 检查经验 → Step 3 使用 todo_manage
+
+### v0.14.0 — 三维智能上下文压缩
 
 - **语义角色分类**：每条对话自动标记为 requirement/correction/error_attempt/final_result/intermediate/directive/question
 - **话题分组与归档**：自动检测话题边界，冷话题归档（cold），热话题保留（hot），支持 `/recall` 召回

@@ -2,6 +2,8 @@
 
 - web_fetch: Fetch content from a URL
 - read_file: Read a local file
+- glob_search: Find files by glob pattern
+- grep_search: Search file contents by regex
 """
 
 from __future__ import annotations
@@ -440,6 +442,168 @@ def _format_size(size: int) -> str:
         return f"{size / (1024 * 1024):.1f}MB"
 
 
+
+# ── Glob: file pattern search ──────────────────────────────────
+
+async def _glob_search(params: dict[str, Any], **deps: Any) -> str:
+    """Find files matching a glob pattern."""
+    import fnmatch
+    import os
+
+    pattern = params.get("pattern", "")
+    if not pattern:
+        return "Error: pattern is required (e.g. '**/*.py', 'src/**/*.ts')"
+
+    path = params.get("path", "")
+    if not path:
+        path = str(Path.cwd())
+    base = Path(path).expanduser().resolve()
+
+    if not _is_path_allowed(base):
+        return f"Error: access denied for {base}"
+    if not base.is_dir():
+        return f"Error: not a directory: {base}"
+
+    max_results = params.get("max_results", 200)
+
+    # Use Path.glob for recursive patterns
+    try:
+        matches = []
+        for p in sorted(base.glob(pattern)):
+            # Skip hidden dirs and common junk
+            parts = p.relative_to(base).parts
+            if any(
+                part.startswith(".") or part in (
+                    "node_modules", "__pycache__", "vendor", "dist",
+                    "build", "venv", "env", ".venv",
+                )
+                for part in parts
+            ):
+                continue
+            rel = str(p.relative_to(base))
+            if p.is_dir():
+                rel += "/"
+            else:
+                try:
+                    size_str = _format_size(p.stat().st_size)
+                    rel += f"  ({size_str})"
+                except OSError:
+                    pass
+            matches.append(rel)
+            if len(matches) >= max_results:
+                break
+
+        if not matches:
+            return f"No files matching '{pattern}' in {base}"
+
+        header = f"[{len(matches)} matches for '{pattern}' in {base}]\n"
+        result = header + "\n".join(matches)
+        if len(matches) >= max_results:
+            result += f"\n... (limited to {max_results}, use a more specific pattern)"
+        return result
+    except Exception as e:
+        return f"Glob error: {e}"
+
+
+# ── Grep: content search ───────────────────────────────────────
+
+async def _grep_search(params: dict[str, Any], **deps: Any) -> str:
+    """Search file contents by regex pattern."""
+    import re
+
+    pattern = params.get("pattern", "")
+    if not pattern:
+        return "Error: pattern is required"
+
+    path = params.get("path", "")
+    if not path:
+        path = str(Path.cwd())
+    base = Path(path).expanduser().resolve()
+
+    if not _is_path_allowed(base):
+        return f"Error: access denied for {base}"
+
+    file_glob = params.get("file_glob", "")  # e.g. "*.py", "*.ts"
+    max_results = params.get("max_results", 50)
+    context_lines = params.get("context", 0)
+    case_insensitive = params.get("case_insensitive", False)
+
+    flags = re.IGNORECASE if case_insensitive else 0
+    try:
+        regex = re.compile(pattern, flags)
+    except re.error as e:
+        return f"Invalid regex: {e}"
+
+    # Collect target files
+    skip_dirs = {
+        "node_modules", "__pycache__", "vendor", "dist", "build",
+        "venv", "env", ".venv", ".git", ".tox",
+    }
+    binary_exts = {
+        ".pyc", ".pyo", ".so", ".o", ".a", ".dylib", ".dll", ".exe",
+        ".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".zip",
+        ".gz", ".tar", ".whl", ".egg", ".bin", ".dat", ".db", ".sqlite",
+    }
+
+    files_to_search = []
+    if base.is_file():
+        files_to_search = [base]
+    else:
+        glob_pat = file_glob if file_glob else "**/*"
+        for p in base.glob(glob_pat):
+            if not p.is_file():
+                continue
+            if p.suffix.lower() in binary_exts:
+                continue
+            parts = p.relative_to(base).parts
+            if any(part.startswith(".") or part in skip_dirs for part in parts):
+                continue
+            files_to_search.append(p)
+            if len(files_to_search) > 5000:  # safety cap
+                break
+
+    matches = []
+    files_with_matches = set()
+
+    for fpath in files_to_search:
+        if len(matches) >= max_results:
+            break
+        try:
+            text = fpath.read_text(errors="replace")
+            lines = text.split("\n")
+            for line_num, line in enumerate(lines, 1):
+                if regex.search(line):
+                    rel = str(fpath.relative_to(base)) if base.is_dir() else fpath.name
+                    files_with_matches.add(rel)
+
+                    # Build match entry with optional context
+                    entry_lines = []
+                    if context_lines > 0:
+                        start = max(0, line_num - 1 - context_lines)
+                        end = min(len(lines), line_num + context_lines)
+                        for ctx_num in range(start, end):
+                            prefix = ">" if ctx_num == line_num - 1 else " "
+                            entry_lines.append(f"{prefix} {ctx_num + 1:4d}| {lines[ctx_num]}")
+                        matches.append(f"{rel}:\n" + "\n".join(entry_lines))
+                    else:
+                        matches.append(f"{rel}:{line_num}: {line.rstrip()}")
+
+                    if len(matches) >= max_results:
+                        break
+        except (UnicodeDecodeError, PermissionError, OSError):
+            continue
+
+    if not matches:
+        scope = f"in {base}" + (f" ({file_glob})" if file_glob else "")
+        return f"No matches for /{pattern}/ {scope}"
+
+    header = f"[{len(matches)} matches in {len(files_with_matches)} files for /{pattern}/]\n"
+    result = header + "\n".join(matches)
+    if len(matches) >= max_results:
+        result += f"\n... (limited to {max_results}, refine pattern for more)"
+    return result
+
+
 WEB_FETCH = ToolDef(
     name="web_fetch",
     description="Fetch the content of a URL (webpage, API endpoint, etc.).",
@@ -505,4 +669,72 @@ LIST_DIR = ToolDef(
         "required": ["path"],
     },
     fn=_list_dir,
+)
+
+GLOB_SEARCH = ToolDef(
+    name="glob_search",
+    description=(
+        "Find files matching a glob pattern. Fast file discovery by name/extension. "
+        "Use this instead of execute_shell with find/ls. "
+        "Examples: '**/*.py', 'src/**/*.ts', '**/test_*.py', '*.yaml'"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "pattern": {
+                "type": "string",
+                "description": "Glob pattern (e.g. '**/*.py', 'src/**/*.ts')",
+            },
+            "path": {
+                "type": "string",
+                "description": "Base directory to search in (default: current working directory)",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Max files to return (default: 200)",
+            },
+        },
+        "required": ["pattern"],
+    },
+    fn=_glob_search,
+)
+
+GREP_SEARCH = ToolDef(
+    name="grep_search",
+    description=(
+        "Search file contents by regex pattern. Use this instead of execute_shell with grep/rg. "
+        "Returns matching lines with file paths and line numbers. "
+        "Supports file type filtering, context lines, and case-insensitive search."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "pattern": {
+                "type": "string",
+                "description": "Regex pattern to search for (e.g. 'def main', 'import.*os', 'TODO')",
+            },
+            "path": {
+                "type": "string",
+                "description": "File or directory to search in (default: current working directory)",
+            },
+            "file_glob": {
+                "type": "string",
+                "description": "Only search files matching this glob (e.g. '*.py', '**/*.ts')",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Max matches to return (default: 50)",
+            },
+            "context": {
+                "type": "integer",
+                "description": "Number of context lines before and after each match (default: 0)",
+            },
+            "case_insensitive": {
+                "type": "boolean",
+                "description": "Case-insensitive search (default: false)",
+            },
+        },
+        "required": ["pattern"],
+    },
+    fn=_grep_search,
 )

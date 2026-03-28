@@ -313,6 +313,8 @@ async def _edit_file(params: dict[str, Any], **deps: Any) -> str:
     if not path.is_file():
         return f"Error: not a file: {path}"
 
+    replace_all = params.get("replace_all", False)
+
     try:
         content = path.read_text(errors="replace")
         count = content.count(old_text)
@@ -326,22 +328,26 @@ async def _edit_file(params: dict[str, Any], **deps: Any) -> str:
                 f"File has {len(lines)} lines. First 20 lines:\n{preview}"
             )
 
-        if count > 1:
+        if count > 1 and not replace_all:
             return (
                 f"Warning: old_text found {count} times in {path}. "
-                "Please provide more context to make the match unique, "
-                "or use write_file for a full rewrite."
+                "Set replace_all=true to replace all occurrences, "
+                "or provide more context to make the match unique."
             )
 
-        new_content = content.replace(old_text, new_text, 1)
+        if replace_all:
+            new_content = content.replace(old_text, new_text)
+        else:
+            new_content = content.replace(old_text, new_text, 1)
         path.write_text(new_content)
 
         # Calculate diff summary
         old_lines = old_text.count("\n") + 1
         new_lines = new_text.count("\n") + 1
+        replaced = count if replace_all else 1
         return (
-            f"Edited {path}: replaced {old_lines} lines with {new_lines} lines "
-            f"({len(old_text)} chars → {len(new_text)} chars)"
+            f"Edited {path}: replaced {replaced} occurrence{'s' if replaced > 1 else ''} "
+            f"({old_lines} lines → {new_lines} lines, {len(old_text)} chars → {len(new_text)} chars)"
         )
     except Exception as e:
         return f"Edit error: {e}"
@@ -368,6 +374,10 @@ EDIT_FILE = ToolDef(
             "new_text": {
                 "type": "string",
                 "description": "Replacement text",
+            },
+            "replace_all": {
+                "type": "boolean",
+                "description": "Replace ALL occurrences (default: false, requires unique match)",
             },
         },
         "required": ["path", "old_text", "new_text"],

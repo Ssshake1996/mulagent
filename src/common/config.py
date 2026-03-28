@@ -179,6 +179,7 @@ class Settings(BaseSettings):
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
+    hooks: dict = Field(default_factory=dict)  # pre/post tool hooks
 
 
 def _parse_llm_settings(raw_llm: dict[str, Any]) -> LLMSettings:
@@ -215,6 +216,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
         sandbox=SandboxSettings(**raw.get("sandbox", {})),
         security=SecuritySettings(**raw.get("security", {})),
         observability=ObservabilitySettings(**raw.get("observability", {})),
+        hooks=raw.get("hooks", {}),
     )
 
 

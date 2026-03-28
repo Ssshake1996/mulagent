@@ -1,14 +1,16 @@
 """Feedback-driven evolution — closes the loop from user feedback to system improvement.
 
-Two mechanisms:
-1. Low-rating retrospective: LLM analyzes why a task failed, stores negative experience
-2. Experience quality: high-rating boosts experience weight, low-rating demotes
+Three mechanisms:
+1. Low-rating retrospective: LLM analyzes failure, stores negative experience
+2. Experience quality: high-rating boosts quality_score, low-rating demotes
+3. Tier promotion: after feedback, check if experiences qualify for L1→L2 promotion
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 from typing import Any
 
@@ -17,6 +19,7 @@ from qdrant_client.models import PointStruct
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from evolution.experience import TIER_L2, TIER_NAMES, maybe_promote
 from models.trace import TaskTrace
 
 logger = logging.getLogger(__name__)
@@ -44,17 +47,26 @@ async def process_feedback(
         logger.warning("Feedback for unknown task %s, skipping evolution", task_id)
         return {"actions": actions, "error": "task_trace_not_found"}
 
-    # 2. Low rating → retrospective analysis
+    # 2. Low rating → retrospective analysis + negative experience
     if rating <= 2 and llm is not None and qdrant is not None:
         retro = await _retrospective(trace, comment, llm, qdrant, collection_name)
         if retro:
             actions.append({"type": "retrospective_stored", "pattern": retro.get("failure_pattern", "")})
 
-    # 3. High rating → boost experience quality in Qdrant
+    # 3. High rating → boost experience quality
     if rating >= 4 and qdrant is not None:
         boosted = _boost_experience(qdrant, collection_name, str(task_id), rating)
         if boosted:
             actions.append({"type": "experience_boosted", "task_id": str(task_id)})
+
+    # 4. After feedback, check for tier promotions
+    if qdrant is not None:
+        try:
+            promoted = await maybe_promote(qdrant, collection_name, llm)
+            for pid in promoted:
+                actions.append({"type": "tier_promoted", "point_id": pid})
+        except Exception as e:
+            logger.debug("Promotion check after feedback failed: %s", e)
 
     logger.info("Feedback processed for task %s: %d actions", task_id, len(actions))
     return {"actions": actions}
@@ -77,7 +89,7 @@ async def _retrospective(
 ) -> dict[str, Any] | None:
     """LLM-powered retrospective for low-rating tasks.
 
-    Analyzes what went wrong and stores a negative experience to avoid repeating mistakes.
+    Stores as a negative experience with tier metadata.
     """
     from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -91,7 +103,8 @@ async def _retrospective(
             '{"failure_pattern": "what type of failure", '
             '"root_cause": "why it failed", '
             '"avoidance_strategy": "how to avoid this in the future", '
-            '"affected_agents": ["agent types involved"]}'
+            '"affected_agents": ["agent types involved"], '
+            '"domain_tags": ["relevant domain tags"]}'
         )),
         HumanMessage(content=(
             f"Task input: {trace.user_input}\n"
@@ -104,13 +117,19 @@ async def _retrospective(
 
     try:
         response = await llm.ainvoke(messages)
-        retro = json.loads(response.content)
+        content = response.content.strip()
+        if content.startswith("```"):
+            lines = content.split("\n")
+            content = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+        retro = json.loads(content)
 
-        # Store as negative experience in Qdrant
+        # Store as negative experience with tier metadata
         from common.vector import text_to_embedding_async
 
         embedding = await text_to_embedding_async(trace.user_input)
         point_id = str(uuid.uuid4())
+        now = time.time()
+
         qdrant.upsert(
             collection_name=collection_name,
             points=[
@@ -119,11 +138,26 @@ async def _retrospective(
                     vector=embedding,
                     payload={
                         "task_id": str(trace.id),
+                        "tier": TIER_L2,
+                        "tier_name": TIER_NAMES[TIER_L2],
                         "problem_pattern": f"[NEGATIVE] {retro.get('failure_pattern', '')}",
+                        "domain_tags": retro.get("domain_tags", []),
                         "recommended_strategy": retro.get("avoidance_strategy", ""),
                         "recommended_agents": retro.get("affected_agents", []),
                         "tips": f"ROOT CAUSE: {retro.get('root_cause', '')}",
-                        "quality_score": -1.0,  # negative marker
+                        "complexity": 0,
+                        "estimated_rounds": 0,
+                        "failure_patterns": [retro.get("failure_pattern", "")],
+                        "prerequisites": [],
+                        "recovery_patterns": [],
+                        "correction_patterns": [],
+                        "quality_score": -1.0,
+                        "use_count": 0,
+                        "success_count": 0,
+                        "fail_count": 0,
+                        "created_at": now,
+                        "last_used_at": now,
+                        "promoted_from": None,
                     },
                 )
             ],
@@ -152,7 +186,7 @@ def infer_implicit_quality(
     signals: dict[str, Any] = {}
 
     if current_turn_index >= len(session_turns) - 1:
-        return signals  # No subsequent turns to analyze
+        return signals
 
     current_response = session_turns[current_turn_index]
     if current_response.get("role") != "assistant":
@@ -167,7 +201,7 @@ def infer_implicit_quality(
 
     signals["follow_up_count"] = follow_ups
 
-    # Check for repeated question (next user message similar to previous user message)
+    # Check for repeated question
     prev_user = None
     next_user = None
     for i in range(current_turn_index - 1, -1, -1):
@@ -180,7 +214,6 @@ def infer_implicit_quality(
             break
 
     if prev_user and next_user:
-        # Simple overlap check — if >50% of words overlap, likely repeated
         prev_words = set(prev_user.lower().split())
         next_words = set(next_user.lower().split())
         if prev_words and next_words:
@@ -189,13 +222,13 @@ def infer_implicit_quality(
             signals["likely_repeated"] = overlap > 0.5
 
     # Infer quality score from signals
-    inferred_score = 3.0  # neutral baseline
+    inferred_score = 3.0
     if follow_ups == 0:
-        inferred_score += 0.5  # No follow-up = likely satisfied
+        inferred_score += 0.5
     elif follow_ups >= 3:
-        inferred_score -= 1.0  # Many follow-ups = incomplete answer
+        inferred_score -= 1.0
     if signals.get("likely_repeated"):
-        inferred_score -= 1.5  # Repeated question = bad answer
+        inferred_score -= 1.5
 
     signals["inferred_score"] = round(max(1.0, min(5.0, inferred_score)), 1)
     return signals
@@ -207,14 +240,10 @@ def _boost_experience(
     task_id: str,
     rating: int,
 ) -> bool:
-    """Boost the quality score of an experience based on positive feedback.
-
-    Searches Qdrant for the experience matching this task_id and updates its payload.
-    """
+    """Boost the quality score of an experience based on positive feedback."""
     try:
         from qdrant_client.models import Filter, FieldCondition, MatchValue
 
-        # Find the experience point for this task
         results = qdrant.scroll(
             collection_name=collection_name,
             scroll_filter=Filter(
@@ -229,14 +258,18 @@ def _boost_experience(
 
         point = points[0]
         payload = dict(point.payload)
-        # Increase quality score (default 1.0, max 5.0)
         current_score = payload.get("quality_score", 1.0)
-        new_score = min(current_score + (rating - 3) * 0.5, 5.0)  # +0.5 for 4, +1.0 for 5
-        payload["quality_score"] = new_score
+        new_score = min(current_score + (rating - 3) * 0.5, 5.0)
+
+        update = {
+            "quality_score": new_score,
+            "success_count": payload.get("success_count", 0) + 1,
+            "last_used_at": time.time(),
+        }
 
         qdrant.set_payload(
             collection_name=collection_name,
-            payload={"quality_score": new_score},
+            payload=update,
             points=[point.id],
         )
         logger.info("Experience %s quality boosted: %.1f → %.1f", point.id, current_score, new_score)

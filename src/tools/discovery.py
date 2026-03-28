@@ -154,15 +154,26 @@ async def _knowledge_recall(params: dict[str, Any], **deps: Any) -> str:
 
         parts = []
         for i, exp in enumerate(relevant, 1):
+            tier_name = exp.get("tier_name", "strategy")
+            tier_label = {"atomic": "L1", "strategy": "L2", "domain": "L3"}.get(tier_name, "L2")
+            use_info = ""
+            use_count = exp.get("use_count", 0)
+            success_rate = exp.get("success_rate")
+            if use_count > 0:
+                rate_str = f", success={success_rate:.0%}" if success_rate is not None else ""
+                use_info = f", used={use_count}{rate_str}"
+
             lines = [
-                f"**[Experience {i}]** (Score: {exp.get('score', 0):.2f}, "
-                f"Complexity: {exp.get('complexity', '?')}/5)",
+                f"**[{tier_label} Experience {i}]** (Score: {exp.get('effective_score', exp.get('score', 0)):.2f}, "
+                f"Complexity: {exp.get('complexity', '?')}/5{use_info})",
                 f"Pattern: {exp.get('problem_pattern', '')}",
                 f"Strategy: {exp.get('recommended_strategy', '')}",
                 f"Tools: {', '.join(exp.get('recommended_agents', []))}",
                 f"Tips: {exp.get('tips', '')}",
             ]
-            # Include failure patterns as warnings
+            tags = exp.get("domain_tags", [])
+            if tags:
+                lines.append(f"Domain: {', '.join(tags)}")
             failures = exp.get("failure_patterns", [])
             if failures:
                 lines.append(f"⚠️ Avoid: {'; '.join(failures[:3])}")

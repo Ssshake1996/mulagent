@@ -617,6 +617,7 @@ _HELP_TEXT = """\
 | `/directives` | 查看持久化约束规则 |
 | `/directives add <规则>` | 添加约束（如"删除前要确认"） |
 | `/directives del <序号>` | 删除指定约束 |
+| `/experience` | 查看经验库统计（分层分级） |
 | `/clear` | 清除当前会话所有对话 |
 | `/help` | 显示本帮助 |
 
@@ -777,6 +778,33 @@ def _on_message(data) -> None:
             _session_mgr.ensure_conversation(sid, user_id)
             result = _session_mgr.conv_store.smart_compress(sid)
             _reply_card(message_id, f"🗜️ {result}")
+        return
+
+    # Handle /experience command — show tiered experience stats
+    if cmd == "/experience":
+        qdrant = _react_params.get("qdrant")
+        collection_name = _react_params.get("collection_name", "case_library")
+        if qdrant is None:
+            _reply_card(message_id, "经验库不可用（Qdrant 未连接）。")
+        else:
+            try:
+                from evolution.experience import get_experience_stats, TIER_NAMES
+                stats = get_experience_stats(qdrant, collection_name)
+                lines = [f"**经验库统计** (共 {stats['total']} 条)\n"]
+                if stats["by_tier"]:
+                    lines.append("**分层分布：**")
+                    tier_labels = {"atomic": "L1 原子操作", "strategy": "L2 任务策略", "domain": "L3 领域知识"}
+                    for tier_name, count in sorted(stats["by_tier"].items()):
+                        label = tier_labels.get(tier_name, tier_name)
+                        lines.append(f"  • {label}: {count} 条")
+                if stats["top_tags"]:
+                    lines.append("\n**热门领域标签：**")
+                    for tag, count in list(stats["top_tags"].items())[:10]:
+                        lines.append(f"  • `{tag}` ({count})")
+                lines.append(f"\n平均质量分: {stats['avg_quality']}")
+                _reply_card(message_id, "\n".join(lines))
+            except Exception as e:
+                _reply_card(message_id, f"获取统计失败: {e}")
         return
 
     # Handle /clear command

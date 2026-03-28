@@ -2,11 +2,15 @@
 
 - delegate: Spawn a sub-agent to handle a subtask, returns compressed result.
   Supports specialized roles from config/agents.yaml and auto-loaded skills.
+  Supports background=true for non-blocking async delegation.
+- check_background: Check results of background delegations.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -305,6 +309,8 @@ async def _delegate(params: dict[str, Any], **deps: Any) -> str:
 
     context_hint = params.get("context", "")
     role = params.get("role", "")
+    background = params.get("background", False)
+    isolation = params.get("isolation", "")
 
     # Import here to avoid circular dependency
     from graph.react_orchestrator import react_loop
@@ -407,39 +413,162 @@ async def _delegate(params: dict[str, Any], **deps: Any) -> str:
     if experience_hint:
         sub_input += experience_hint
 
-    try:
-        meta: dict[str, Any] = {}
-        # Pass updated depth to sub-agent's deps
-        sub_deps = {**deps, "delegate_depth": next_depth}
-        result = await react_loop(
+    # ── Worktree isolation: create temporary git worktree ──
+    worktree_path: str | None = None
+    worktree_branch: str | None = None
+    if isolation == "worktree":
+        worktree_path, worktree_branch = await _create_worktree()
+        if worktree_path:
+            logger.info("Sub-agent worktree created: %s (branch %s)", worktree_path, worktree_branch)
+
+    async def _run_sub_agent() -> str:
+        """Run the sub-agent and return compressed result."""
+        meta_inner: dict[str, Any] = {}
+        sub_deps_inner = {**deps, "delegate_depth": next_depth}
+        if worktree_path:
+            sub_deps_inner["worktree_path"] = worktree_path
+        sub_result = await react_loop(
             user_input=sub_input,
             tools=sub_tools,
             llm=llm,
-            deps=sub_deps,
-            max_rounds=5,        # Shorter loop for sub-agents
-            timeout=90,          # Shorter timeout
-            is_sub_agent=True,   # Skip directive extraction for sub-agents
-            parent_directives=parent_directives,  # Inherit user constraints
-            result_meta=meta,
+            deps=sub_deps_inner,
+            max_rounds=5,
+            timeout=90,
+            is_sub_agent=True,
+            parent_directives=parent_directives,
+            result_meta=meta_inner,
         )
 
-        # ── Structured result with metadata for parent ──
-        strategies = meta.get("strategies_tried", [])
+        strategies = meta_inner.get("strategies_tried", [])
         failed = [s for s in strategies if s.get("outcome") == "fail"]
 
-        # Compress result
         from common.tokenizer import truncate_to_tokens
-        result = truncate_to_tokens(result, 1500)
+        sub_result = truncate_to_tokens(sub_result, 1500)
 
-        # Append sub-agent metadata for parent's awareness
         if failed:
             fail_summary = "; ".join(f"{s['tool']}({s['args_summary']})" for s in failed[:3])
-            result += f"\n\n[Sub-agent note: these approaches failed: {fail_summary}]"
+            sub_result += f"\n\n[Sub-agent note: these approaches failed: {fail_summary}]"
 
+        return sub_result
+
+    # ── Background mode: start async and return immediately ──
+    if background:
+        memory = deps.get("memory")
+        bg_id = f"bg_{int(time.time() * 1000) % 100000}"
+
+        async def _bg_wrapper():
+            try:
+                return await _run_sub_agent()
+            except Exception as e:
+                return f"Background subtask failed: {e}"
+
+        future = asyncio.ensure_future(_bg_wrapper())
+
+        # Store in memory state so check_background can find it
+        if memory is not None:
+            bg_tasks = memory.state.get("_bg_tasks", {})
+            bg_tasks[bg_id] = {
+                "task": task[:100],
+                "role": role,
+                "future": future,
+                "started_at": time.time(),
+            }
+            memory.update_state("_bg_tasks", bg_tasks)
+
+        return (
+            f"Background task started: {bg_id}\n"
+            f"Task: {task[:100]}\n"
+            f"Use check_background(task_id='{bg_id}') to get the result when ready."
+        )
+
+    # ── Foreground mode: wait for result ──
+    try:
+        result = await _run_sub_agent()
+        if worktree_path:
+            wt_info = await _cleanup_worktree(worktree_path, worktree_branch)
+            if wt_info:
+                result += f"\n\n[Worktree: {wt_info}]"
         return result
     except Exception as e:
         logger.warning("delegate failed: %s", e)
+        if worktree_path:
+            await _cleanup_worktree(worktree_path, worktree_branch)
         return f"Subtask failed: {e}"
+
+
+# ── Git worktree helpers ────────────────────────────────────────
+
+async def _create_worktree() -> tuple[str | None, str | None]:
+    """Create a temporary git worktree for isolated sub-agent work.
+
+    Returns (worktree_path, branch_name) or (None, None) on failure.
+    """
+    import tempfile
+
+    branch = f"mulagent-wt-{int(time.time() * 1000) % 100000}"
+    wt_dir = Path(tempfile.mkdtemp(prefix="mulagent_wt_"))
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "worktree", "add", "-b", branch, str(wt_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        if proc.returncode == 0:
+            return str(wt_dir), branch
+        logger.warning("git worktree add failed: %s", stderr.decode()[:200])
+    except Exception as e:
+        logger.warning("Worktree creation failed: %s", e)
+
+    # Cleanup on failure
+    import shutil
+    shutil.rmtree(wt_dir, ignore_errors=True)
+    return None, None
+
+
+async def _cleanup_worktree(wt_path: str, branch: str | None) -> str | None:
+    """Remove a worktree. If it has changes, report them instead of deleting.
+
+    Returns info string about what happened, or None.
+    """
+    import shutil
+
+    try:
+        # Check for changes
+        proc = await asyncio.create_subprocess_exec(
+            "git", "-C", wt_path, "status", "--porcelain",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        has_changes = bool(stdout.decode().strip())
+
+        if has_changes:
+            return f"changes in worktree {wt_path} (branch {branch}), kept for review"
+
+        # No changes — remove worktree and branch
+        proc = await asyncio.create_subprocess_exec(
+            "git", "worktree", "remove", "--force", wt_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=10)
+
+        if branch:
+            proc = await asyncio.create_subprocess_exec(
+                "git", "branch", "-D", branch,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await asyncio.wait_for(proc.communicate(), timeout=5)
+
+        return None  # Clean removal, no message needed
+
+    except Exception as e:
+        logger.debug("Worktree cleanup failed: %s", e)
+        shutil.rmtree(wt_path, ignore_errors=True)
+        return None
 
 
 def _build_delegate_tool() -> ToolDef:
@@ -483,6 +612,15 @@ def _build_delegate_tool() -> ToolDef:
                     "type": "string",
                     "description": "Brief context/background for the sub-agent (optional)",
                 },
+                "background": {
+                    "type": "boolean",
+                    "description": "Run in background (non-blocking). Use check_background to get result later. Default: false.",
+                },
+                "isolation": {
+                    "type": "string",
+                    "description": "Isolation mode. 'worktree' creates a temporary git worktree so the sub-agent works on an isolated copy.",
+                    "enum": ["worktree"],
+                },
             },
             "required": ["task"],
         },
@@ -491,3 +629,71 @@ def _build_delegate_tool() -> ToolDef:
 
 
 DELEGATE = _build_delegate_tool()
+
+
+# ── Background task checker ────────────────────────────────────
+
+async def _check_background(params: dict[str, Any], **deps: Any) -> str:
+    """Check the status/result of a background delegation."""
+    task_id = params.get("task_id", "")
+    memory = deps.get("memory")
+
+    if memory is None:
+        return "Error: no memory context"
+
+    bg_tasks = memory.state.get("_bg_tasks", {})
+
+    if not task_id:
+        # List all background tasks
+        if not bg_tasks:
+            return "No background tasks running."
+        lines = ["**Background tasks:**"]
+        for bid, info in bg_tasks.items():
+            future = info.get("future")
+            status = "done" if (future and future.done()) else "running"
+            elapsed = time.time() - info.get("started_at", 0)
+            lines.append(f"  [{bid}] {info.get('task', '?')[:60]} — {status} ({elapsed:.0f}s)")
+        return "\n".join(lines)
+
+    info = bg_tasks.get(task_id)
+    if not info:
+        return f"Error: background task '{task_id}' not found"
+
+    future = info.get("future")
+    if future is None:
+        return f"Error: no future for task '{task_id}'"
+
+    if not future.done():
+        elapsed = time.time() - info.get("started_at", 0)
+        return f"Task '{task_id}' still running ({elapsed:.0f}s elapsed). Check again later."
+
+    # Get result and clean up
+    try:
+        result = future.result()
+    except Exception as e:
+        result = f"Background task failed: {e}"
+
+    del bg_tasks[task_id]
+    memory.update_state("_bg_tasks", bg_tasks)
+
+    return f"[Background result for '{task_id}']\n{result}"
+
+
+CHECK_BACKGROUND = ToolDef(
+    name="check_background",
+    description=(
+        "Check the status or result of background delegate tasks. "
+        "Call with no task_id to list all running tasks, or with task_id to get a specific result."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Background task ID (from delegate with background=true). Omit to list all.",
+            },
+        },
+        "required": [],
+    },
+    fn=_check_background,
+)

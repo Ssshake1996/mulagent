@@ -99,23 +99,28 @@ User --------+--- CLI TUI / Headless ------+---> SessionManager ---> run_react()
                               +-----------+   +-----------+    +-------------+
                               | Search    |   | File/Code |    |  delegate   |
                               | web_search|   | read_file |    | (sub-agent) |
-                              | knowledge |   | code_run  |    | 12 roles    |
-                              +-----------+   | git_ops   |    +------+------+
-                                              | sql_query |           |
-                                              | browser   |     Re-enter
-                                              +-----------+     ReAct Loop
+                              | knowledge |   | glob/grep |    | 12 roles    |
+                              | glob/grep |   | code_run  |    | background  |
+                              +-----------+   | git_ops   |    | worktree    |
+                                              | sql_query |    +------+------+
+                                              | browser   |          |
+                                              +-----------+    Re-enter
+                                                               ReAct Loop
 ```
 
 **核心设计**：LLM 在推理循环中自主决定调用什么工具，无需意图分类或 DAG 规划。
 
 ## 主要功能
 
-- **17 个内置工具**：搜索、文件操作、代码执行、浏览器、SQL、Git/GitHub、深度研究等
-- **12 个专业子 Agent**：planner、architect、researcher、coder、security_auditor 等
+- **22 个内置工具**：搜索、文件操作（glob/grep）、代码执行、浏览器、SQL、Git/GitHub、深度研究、任务管理、计划模式等
+- **12 个专业子 Agent**：planner、architect、researcher、coder、security_auditor 等，支持后台执行和 worktree 隔离
+- **分层分级经验系统**：L1 原子 → L2 策略 → L3 领域知识，自动晋升与综合，多维评分排序
 - **自我进化系统**：诊断 → 处方 → 执行闭环（`mulagent --evolve`）
 - **外部项目吸收**：给定 Git URL 自动分析并融合能力（`mulagent --absorb <url>`）
 - **智能上下文压缩**：语义分类 + 话题归档 + 相关性驱动动态压缩
-- **动态任务超时**：根据任务类型自动调整超时时间
+- **计划模式**：复杂任务先提交计划供用户确认，避免盲目执行
+- **用户可配置 Hooks**：pre/post 工具钩子，支持自动备份、审计日志
+- **结构化审计日志**：JSON 格式记录每次工具调用，便于合规审计
 - **多通道交付**：CLI TUI、Headless REPL、HTTP API、飞书 Bot
 - **全部数据库可选**：PostgreSQL/Redis/Qdrant 不可用时优雅降级
 

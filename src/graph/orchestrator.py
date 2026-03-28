@@ -81,6 +81,18 @@ async def run_react(
         except Exception as e:
             logger.debug("Self-evaluation skipped: %s", e)
 
+        # ── Plan mode: if LLM submitted a plan, return it for user approval ──
+        if meta.get("plan_pending"):
+            return {
+                "final_output": output,
+                "status": "plan_pending",
+                "intent": "react",
+                "directives": meta.get("directives", []),
+                "tools_used": meta.get("tools_used", []),
+                "strategies_tried": meta.get("strategies_tried", []),
+                "self_eval": None,
+            }
+
         return {
             "final_output": output,
             "status": "completed",
