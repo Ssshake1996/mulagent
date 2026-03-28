@@ -280,7 +280,7 @@ class ConversationStore:
         session_id: str,
         current_query: str = "",
         max_turns: int = 10,
-        max_chars: int = 8000,
+        max_chars: int = 0,
     ) -> str:
         """Build a conversation history string for the system prompt.
 
@@ -293,7 +293,7 @@ class ConversationStore:
             session_id: The conversation session ID.
             current_query: Current user query for relevance scoring.
             max_turns: Max recent turns (fallback if compressor unavailable).
-            max_chars: Character budget for assembled context.
+            max_chars: Character budget. 0 = auto (max_tokens * 0.5 * 4).
 
         Returns:
             Assembled context string optimized for LLM consumption.
@@ -301,6 +301,10 @@ class ConversationStore:
         conv = self.load(session_id)
         if conv is None or not conv.get("turns"):
             return ""
+
+        # Auto-compute max_chars from config: max_tokens * 0.5 (token budget) * 4 (chars/token)
+        if max_chars <= 0:
+            max_chars = self._auto_max_chars()
 
         turns = conv["turns"]
         summary = conv.get("summary", "")
@@ -315,6 +319,20 @@ class ConversationStore:
             archived_topics=archived_topics,
             summary=summary,
         )
+
+    @staticmethod
+    def _auto_max_chars(default: int = 8000) -> int:
+        """Compute max_chars from config: max_tokens * 0.5 * 4."""
+        try:
+            from common.config import get_settings
+            settings = get_settings()
+            model_cfg = settings.llm.get_model()
+            if model_cfg and model_cfg.max_tokens:
+                # 50% of max_tokens for context, ~4 chars per token
+                return int(model_cfg.max_tokens * 0.5 * 4)
+        except Exception:
+            pass
+        return default
 
     def smart_compress(self, session_id: str) -> str:
         """Force smart compression: archive old topics and return summary."""

@@ -605,6 +605,10 @@ _HELP_TEXT = """\
 | `/new` | 开启新会话（清除上下文） |
 | `/resume` | 查看最近的会话列表 |
 | `/resume <id>` | 恢复指定会话 |
+| `/topics` | 查看所有话题（热/冷/已召回） |
+| `/recall <关键词>` | 按关键词召回归档话题 |
+| `/compress` | 手动触发智能上下文压缩 |
+| `/clear` | 清除当前会话所有对话 |
 | `/help` | 显示本帮助 |
 
 **支持的消息类型**: 文字、图片、文件（代码/文本）、富文本
@@ -720,6 +724,58 @@ def _on_message(data) -> None:
                 _reply_card(message_id, f"未找到匹配 `{target}` 的会话。\n\n发送 `/resume` 查看列表。")
         else:
             _reply_card(message_id, "会话存储未初始化。")
+        return
+
+    # Handle /topics command
+    if cmd == "/topics":
+        if _session_mgr:
+            sid = _session_mgr.get_or_create(user_id, chat_id)
+            _session_mgr.ensure_conversation(sid, user_id)
+            topics = _session_mgr.conv_store.list_topics(sid)
+            if not topics:
+                _reply_card(message_id, "当前没有话题记录。")
+            else:
+                lines = ["**话题列表**\n"]
+                status_map = {"hot": "🔥", "cold": "❄️", "recalled": "🔄"}
+                for t in topics:
+                    icon = status_map.get(t["status"], "")
+                    lines.append(f"- {icon} `{t['id']}` {t['title'][:40]}  ({t['turns_count']}轮)")
+                _reply_card(message_id, "\n".join(lines))
+        return
+
+    # Handle /recall <keyword> command
+    if cmd.startswith("/recall "):
+        query = text.strip().split(maxsplit=1)[1].strip()
+        if _session_mgr and query:
+            sid = _session_mgr.get_or_create(user_id, chat_id)
+            _session_mgr.ensure_conversation(sid, user_id)
+            recalled = _session_mgr.conv_store.recall_topic(sid, query)
+            if recalled:
+                lines = [f"✅ 召回了 {len(recalled)} 个相关话题\n"]
+                for t in recalled:
+                    lines.append(f"- `{t.get('id', '?')}` {t.get('title', '')[:40]}")
+                    if t.get("summary"):
+                        lines.append(f"  {t['summary'][:80]}")
+                _reply_card(message_id, "\n".join(lines))
+            else:
+                _reply_card(message_id, f"未找到与「{query}」相关的归档话题。")
+        return
+
+    # Handle /compress command
+    if cmd == "/compress":
+        if _session_mgr:
+            sid = _session_mgr.get_or_create(user_id, chat_id)
+            _session_mgr.ensure_conversation(sid, user_id)
+            result = _session_mgr.conv_store.smart_compress(sid)
+            _reply_card(message_id, f"🗜️ {result}")
+        return
+
+    # Handle /clear command
+    if cmd == "/clear":
+        if _session_mgr:
+            sid = _session_mgr.get_or_create(user_id, chat_id)
+            _session_mgr.conv_store.clear_turns(sid)
+            _reply_card(message_id, "✅ 当前会话已清空。")
         return
 
     session_id = _session_mgr.get_or_create(user_id, chat_id) if _session_mgr else "fallback"
