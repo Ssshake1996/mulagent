@@ -198,30 +198,32 @@ react_loop(user_input, tools, llm)
 
 ## 4. 22 个工具清单
 
-| 工具 | 成本 | 用途 |
-|------|------|------|
-| `knowledge_recall` | ⚡ 免费 | 知识库语义检索（含分层经验） |
-| `read_file` | ⚡ 免费 | 读取文件 |
-| `list_dir` | ⚡ 免费 | 浏览目录 |
-| `glob_search` | ⚡ 免费 | 文件名模式匹配搜索 |
-| `grep_search` | ⚡ 免费 | 文件内容正则搜索 |
-| `codemap` | ⚡ 免费 | AST 代码结构提取 |
-| `todo_manage` | ⚡ 免费 | 任务管理（create/done/update/list） |
-| `plan_submit` | ⚡ 免费 | 提交执行计划供用户确认 |
-| `check_background` | ⚡ 免费 | 查询后台子 agent 状态和结果 |
-| `web_search` | 🔍 中等 | 网络搜索 |
-| `web_fetch` | 🌐 中等 | 抓取网页内容 |
-| `docs_lookup` | 📚 中等 | 官方文档查询 |
-| `execute_shell` | 🔧 重 | 执行 Shell 命令 |
-| `code_run` | 🔧 重 | 多语言代码执行 |
-| `write_file` | ✏️ 即时 | 写入文件 |
-| `edit_file` | ✏️ 即时 | 文件局部编辑（支持 replace_all 批量替换） |
-| `browser_fetch` | 🌐 重 | Playwright JS 渲染抓取 |
-| `sql_query` | 🗄️ 中等 | 只读 SQL 查询 |
-| `git_ops` | 🔧 中等 | Git 操作 |
-| `github_ops` | 🐙 中等 | GitHub PR/Issue 管理 |
-| `deep_research` | 🔬 重 | 多角度深度研究 |
-| `delegate` | 🤖 昂贵 | 委派给专业子 agent（支持后台执行 + worktree 隔离） |
+工具按**功能分类**，选择依据是「任务需要什么」而非「哪个便宜」。
+
+| 分类 | 工具 | 可逆性 | 用途 |
+|------|------|--------|------|
+| 搜索与发现 | `glob_search` | 只读 | 文件名模式匹配搜索 |
+| | `grep_search` | 只读 | 文件内容正则搜索 |
+| | `read_file` | 只读 | 读取文件（支持 offset/limit） |
+| | `list_dir` | 只读 | 浏览目录 |
+| | `codemap` | 只读 | AST 代码结构提取（仅作 glob/grep 补充） |
+| | `knowledge_recall` | 只读 | 知识库语义检索（含分层经验） |
+| 外部查询 | `web_search` | 只读 | 网络搜索 |
+| | `web_fetch` | 只读 | 抓取网页内容 |
+| | `docs_lookup` | 只读 | 官方文档查询 |
+| 文件操作 | `edit_file` | 可逆 | 文件局部编辑（支持 replace_all），优先于 write_file |
+| | `write_file` | 可逆 | 创建新文件或完整重写 |
+| 执行 | `execute_shell` | 有副作用 | Shell 命令（仅用于计算/系统操作，禁止搜索/读取） |
+| | `code_run` | 有副作用 | 多语言代码执行（Python/JS/TS/Go/Rust/Java） |
+| | `sql_query` | 只读 | 只读 SQL 查询 |
+| | `browser_fetch` | 只读 | Playwright JS 渲染抓取 |
+| 版本控制 | `git_ops` | 部分可逆 | Git 操作（push/force push 需确认） |
+| | `github_ops` | 影响外部 | GitHub PR/Issue 管理 |
+| 任务管理 | `todo_manage` | 可逆 | 任务管理（create/done/update/list） |
+| | `plan_submit` | 可逆 | 提交执行计划供用户确认 |
+| | `check_background` | 只读 | 查询后台子 agent 状态和结果 |
+| 研究与委派 | `deep_research` | 只读 | 多角度深度研究 |
+| | `delegate` | 视子任务 | 委派给专业子 agent（后台执行 + worktree 隔离） |
 
 ---
 
@@ -630,7 +632,9 @@ metadata:
 | Worktree 隔离 | 文件变更在临时 worktree 中执行，保护主工作目录 |
 | 用户可配置 Shell Hooks | pre/post 钩子支持审计、备份、危险操作确认（exit 2 触发飞书确认卡片） |
 | 结构化审计日志 | JSON 格式记录每次工具调用，便于合规审计和问题追踪 |
-| glob_search/grep_search 优先于 execute_shell | 专用工具更安全、更高效，减少 Shell 注入风险 |
+| 任务适配选工具（非成本驱动） | 对标 Claude Code：按功能分类、可逆性决策，而非按价格递增 |
+| 强制并行独立工具调用 | 减少轮次浪费，独立调用在同一轮发出 |
+| 专用工具替代 shell 搜索/读取 | glob/grep/read_file 更安全高效，减少 Shell 注入风险 |
 | 搜索驱动代码理解（对标 Claude Code） | codemap 全扫描不 scale，Glob+Grep+Read 定位→精确→阅读→追踪 更高效 |
 | 压缩参数可配置化（13 项） | 不同模型上下文窗口差异大，硬编码无法适配 Qwen 1M vs GPT-4 128K |
 
@@ -684,8 +688,11 @@ metadata:
   - 5 步工作流：定位→精确→阅读→追踪→修改
   - codemap 降级为补充工具，不再作为首选
   - 明确禁止 codemap 全目录扫描和盲读整个文件
-- **Prompt 优化**：
-  - 工具成本指南更新，引导优先使用 glob_search/grep_search
+- **工具选择原则重写**（对标 Claude Code）：
+  - 从「成本递增」改为「任务适配 + 可逆性感知」：按功能分类，不按价格排序
+  - 可逆性三级：只读（随便用）→ 可逆/有副作用（说明变更）→ 影响外部/不可逆（确认后执行）
+  - 强制并行：无依赖的工具调用必须在同一轮并行发出
+  - 最小变更原则：不加多余功能、不加没请求的注释、不为假设的需求设计
   - 8 条负向规则（禁止用 execute_shell 搜索文件/内容、禁止文本化任务跟踪等）
   - 新增经验系统引导：复杂任务前先 knowledge_recall 查询历史经验
   - ReAct 循环步骤更新：Step 1 检查经验 → Step 3 使用 todo_manage
