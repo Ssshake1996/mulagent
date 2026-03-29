@@ -67,22 +67,6 @@ class ToolRegistry:
     def as_dict(self) -> dict[str, ToolDef]:
         return dict(self._tools)
 
-    def to_openai_tools(self) -> list[dict[str, Any]]:
-        """Generate OpenAI-compatible tool schemas for LLM bind_tools."""
-        return [tool.to_openai_schema() for tool in self._tools.values()]
-
-    def tool_descriptions_text(self) -> str:
-        """Generate a human-readable tool list for system prompts."""
-        lines = []
-        for tool in self._tools.values():
-            params = ", ".join(
-                f"{k}: {v.get('type', 'any')}"
-                for k, v in tool.parameters.get("properties", {}).items()
-            )
-            lines.append(f"- **{tool.name}**({params}): {tool.description}")
-        return "\n".join(lines)
-
-
 def get_default_tools() -> ToolRegistry:
     """Create a registry with all default built-in tools + plugins."""
     registry = ToolRegistry(ALL_TOOLS)

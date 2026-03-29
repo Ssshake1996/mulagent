@@ -10,7 +10,7 @@ Provides:
 from __future__ import annotations
 
 import logging
-import time
+
 logger = logging.getLogger(__name__)
 
 # Lazy-initialized global client
@@ -46,47 +46,6 @@ async def get_redis():
         return None
 
 
-# ── Rate Limiting ────────────────────────────────────────────────
-
-async def check_rate_limit(
-    key: str,
-    max_requests: int = 10,
-    window_seconds: int = 60,
-) -> tuple[bool, int]:
-    """Sliding window rate limiter.
-
-    Args:
-        key: Rate limit key (e.g., f"rate:{user_id}")
-        max_requests: Maximum requests per window
-        window_seconds: Window size in seconds
-
-    Returns:
-        (allowed, remaining) — whether the request is allowed and remaining quota
-    """
-    r = await get_redis()
-    if r is None:
-        return True, max_requests  # No Redis → no rate limiting
-
-    now = time.time()
-    window_start = now - window_seconds
-    pipe = r.pipeline()
-
-    # Remove expired entries
-    pipe.zremrangebyscore(key, 0, window_start)
-    # Count current entries
-    pipe.zcard(key)
-    # Add current request
-    pipe.zadd(key, {str(now): now})
-    # Set key expiry
-    pipe.expire(key, window_seconds + 1)
-
-    results = await pipe.execute()
-    current_count = results[1]
-
-    if current_count >= max_requests:
-        return False, 0
-
-    return True, max_requests - current_count - 1
 
 
 # ── Cache ────────────────────────────────────────────────────────

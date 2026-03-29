@@ -70,10 +70,6 @@ class WorkingMemory:
             pinned=pinned,
         ))
 
-    def pin_fact(self, source: str, content: str, round_num: int) -> None:
-        """Add a pinned fact that will never be compacted."""
-        self.add_fact(source, content, round_num, pinned=True)
-
     def compact_facts(self, keep_recent: int = 5) -> None:
         """Compress the facts layer: merge old facts, keep recent ones intact.
 

@@ -110,44 +110,6 @@ def get_workspace(session_id: str = "default") -> Path:
     return ws
 
 
-async def install_dependencies(packages: list[str], session_id: str = "default") -> str:
-    """Pre-install Python packages into a persistent workspace.
-
-    Installs to a session-specific directory that gets mounted into containers.
-    """
-    if not packages:
-        return "No packages specified"
-
-    ws = get_workspace(session_id)
-    pip_target = ws / "_pip_packages"
-    pip_target.mkdir(exist_ok=True)
-
-    safe_packages = [p for p in packages if all(c.isalnum() or c in "-_." for c in p)]
-    if not safe_packages:
-        return "Error: invalid package names"
-
-    cmd = [
-        "pip", "install", "--target", str(pip_target),
-        "--no-cache-dir", "--quiet",
-    ] + safe_packages
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-        if proc.returncode == 0:
-            logger.info("Installed %d packages to workspace %s", len(safe_packages), session_id)
-            return f"Installed: {', '.join(safe_packages)}"
-        return f"pip install failed: {stderr.decode(errors='replace')[:300]}"
-    except asyncio.TimeoutError:
-        return "Package installation timed out (120s)"
-    except Exception as e:
-        return f"Installation error: {e}"
-
-
 async def run_in_sandbox(
     command: str,
     *,

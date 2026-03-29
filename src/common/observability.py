@@ -26,19 +26,6 @@ logger = logging.getLogger(__name__)
 
 # ── Metrics ───────────────────────────────────────────────────────
 
-@dataclass
-class MetricPoint:
-    """A single metric data point."""
-    name: str
-    value: float
-    labels: dict[str, str] = field(default_factory=dict)
-    timestamp: float = 0.0
-
-    def __post_init__(self):
-        if not self.timestamp:
-            self.timestamp = time.time()
-
-
 class MetricsRegistry:
     """Prometheus-compatible metrics registry.
 
@@ -298,23 +285,3 @@ metrics = MetricsRegistry()
 tracer = Tracer(metrics)
 
 
-def setup_default_alerts():
-    """Configure default alert rules."""
-    metrics.add_alert_rule(AlertRule(
-        metric_name="task_errors_total",
-        threshold=10,
-        severity="critical",
-        message="High error rate: >10 task errors",
-    ))
-    metrics.add_alert_rule(AlertRule(
-        metric_name="span_duration_seconds",
-        threshold=300,
-        severity="warning",
-        message="Slow operation: >5 minutes",
-    ))
-    metrics.add_alert_rule(AlertRule(
-        metric_name="active_tasks",
-        threshold=50,
-        severity="warning",
-        message="High concurrency: >50 active tasks",
-    ))

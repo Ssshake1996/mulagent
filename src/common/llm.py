@@ -53,26 +53,6 @@ class LLMManager:
 
         return self._cache[cache_key]
 
-    def get_light(self, model_id: str | None = None) -> ChatOpenAI | None:
-        """Get a lightweight LLM for control-plane calls (dispatch, plan, quality check).
-        Capped at 1024 tokens, thinking disabled for speed."""
-        key = model_id or self._settings.default
-        if not key:
-            return None
-
-        cache_key = f"{key}:light"
-        if cache_key not in self._cache:
-            config = self._settings.get_model(key)
-            if config is None:
-                return None
-            self._cache[cache_key] = create_llm(
-                config,
-                max_tokens_override=1024,
-                extra_body={"enable_thinking": False},
-            )
-
-        return self._cache[cache_key]
-
     @property
     def default(self) -> ChatOpenAI | None:
         return self.get()

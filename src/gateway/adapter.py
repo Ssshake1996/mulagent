@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 import logging
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
 
 from graph.conversation import ConversationStore
 
@@ -26,14 +26,6 @@ class ProgressEvent:
     action: str = ""       # "thinking" | "tool_call" | "tool_result" | "answer"
     detail: str = ""
     elapsed_ms: int = 0
-
-
-class OutputAdapter(Protocol):
-    """Any frontend (CLI, Feishu, Desktop) implements this to receive output."""
-
-    async def send_progress(self, event: ProgressEvent) -> None: ...
-    async def send_text(self, text: str) -> None: ...
-    async def send_error(self, error: str) -> None: ...
 
 
 # ── Session manager ───────────────────────────────────────────────

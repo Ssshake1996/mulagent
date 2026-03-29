@@ -247,34 +247,6 @@ class EvolutionController:
         diagnosis = await self.diagnostician.diagnose(days=days)
         return diagnosis.summary()
 
-    async def apply_evolution(
-        self,
-        evolution_dict: dict[str, Any],
-        dry_run: bool = False,
-    ) -> dict[str, Any]:
-        """Apply a single evolution from its dict representation.
-
-        Used for confirming previously proposed evolutions.
-        """
-        from evolution.prescriber import Evolution
-        evo = Evolution(
-            type=evolution_dict["type"],
-            target=evolution_dict["target"],
-            reason=evolution_dict.get("reason", ""),
-            patch=evolution_dict.get("patch", ""),
-            priority=evolution_dict.get("priority", 2),
-            confidence=evolution_dict.get("confidence", 0.5),
-        )
-        results = await self.applier.apply([evo], dry_run=dry_run)
-        if results:
-            r = results[0]
-            return {
-                "success": r.success,
-                "message": r.message,
-                "backup": r.backup_path,
-            }
-        return {"success": False, "message": "No result"}
-
     def _save_evolution_log(self, report: EvolutionReport) -> None:
         """Persist evolution report to file for history tracking."""
         try:

@@ -99,31 +99,6 @@ async def save_checkpoint(
     return result
 
 
-async def load_checkpoint(task_id: str) -> dict | None:
-    """Load a checkpoint from Redis.
-
-    Returns the checkpoint dict, or None if not found/expired.
-    """
-    from common.redis_client import cache_get
-
-    key = f"{_CHECKPOINT_PREFIX}{task_id}"
-    raw = await cache_get(key)
-    if not raw:
-        return None
-
-    try:
-        checkpoint = json.loads(raw)
-        age_s = time.time() - checkpoint.get("saved_at", 0)
-        logger.info(
-            "Checkpoint loaded for task %s (round %d, age %.0fs)",
-            task_id, checkpoint.get("round_num", 0), age_s,
-        )
-        return checkpoint
-    except Exception as e:
-        logger.warning("Failed to load checkpoint for task %s: %s", task_id, e)
-        return None
-
-
 async def delete_checkpoint(task_id: str) -> None:
     """Delete a checkpoint after successful task completion."""
     from common.redis_client import get_redis
@@ -134,11 +109,6 @@ async def delete_checkpoint(task_id: str) -> None:
             logger.debug("Checkpoint deleted for task %s", task_id)
         except Exception:
             pass
-
-
-def restore_memory(checkpoint: dict) -> Any:
-    """Restore WorkingMemory from checkpoint data."""
-    return _deserialize_memory(checkpoint.get("memory", {}))
 
 
 def build_resume_context(checkpoint: dict) -> str:

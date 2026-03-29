@@ -90,65 +90,6 @@ def _chunk_id(filename: str, chunk_idx: int, content: str) -> str:
     return f"{filename}:{chunk_idx}:{h}"
 
 
-async def index_knowledge_bases(qdrant: Any = None, force: bool = False) -> int:
-    """Index all knowledge base files into Qdrant.
-
-    Skips files that haven't changed since last indexing.
-    Returns the number of chunks indexed.
-    """
-    if qdrant is None:
-        return 0
-
-    from common.vector import ensure_collection, batch_embed_async, get_vector_dim
-
-    ensure_collection(qdrant, _COLLECTION_NAME, get_vector_dim())
-
-    if not _KNOWLEDGE_DIR.exists():
-        return 0
-
-    total_chunks = 0
-    for md_file in sorted(_KNOWLEDGE_DIR.glob("*.md")):
-        mtime = md_file.stat().st_mtime
-        if not force and md_file.name in _indexed_files:
-            if _indexed_files[md_file.name] >= mtime:
-                continue  # File unchanged
-
-        text = md_file.read_text(encoding="utf-8")
-        chunks = _chunk_markdown(text)
-        if not chunks:
-            continue
-
-        # Generate embeddings
-        embeddings = await batch_embed_async(chunks)
-
-        # Upsert to Qdrant
-        from qdrant_client.models import PointStruct
-        points = []
-        for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-            cid = _chunk_id(md_file.stem, i, chunk)
-            _chunk_index[cid] = chunk
-            points.append(PointStruct(
-                id=hashlib.md5(cid.encode()).hexdigest(),
-                vector=embedding,
-                payload={
-                    "chunk_id": cid,
-                    "source_file": md_file.stem,
-                    "chunk_index": i,
-                    "content": chunk,
-                    "char_count": len(chunk),
-                },
-            ))
-
-        if points:
-            qdrant.upsert(collection_name=_COLLECTION_NAME, points=points)
-            total_chunks += len(points)
-
-        _indexed_files[md_file.name] = mtime
-        logger.info("Indexed %s: %d chunks", md_file.name, len(chunks))
-
-    if total_chunks:
-        logger.info("Knowledge indexing complete: %d total chunks", total_chunks)
-    return total_chunks
 
 
 async def retrieve_knowledge(

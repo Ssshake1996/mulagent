@@ -122,15 +122,6 @@ class MetricsCollector:
             },
         )
 
-    def record_error(self, error_type: str, detail: str = "") -> None:
-        """Record an error occurrence."""
-        self._error_counts[error_type] = self._error_counts.get(error_type, 0) + 1
-        logger = logging.getLogger("metrics")
-        logger.warning(
-            "error_recorded",
-            extra={"error": error_type, "detail": detail[:200]},
-        )
-
     def get_summary(self, last_n_minutes: int = 60) -> dict[str, Any]:
         """Get a summary of metrics for the last N minutes."""
         cutoff = time.time() - (last_n_minutes * 60)
