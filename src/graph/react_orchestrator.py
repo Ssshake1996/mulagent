@@ -560,8 +560,25 @@ async def react_loop(
                 # ── Pre-tool hook: directive enforcement ──
                 blocked = pre_tool_hook(t_name, t_args, list(memory.directives))
                 if blocked:
-                    logger.info("Tool %s blocked by pre-hook: %s", t_name, blocked[:100])
-                    return tc, blocked
+                    # Confirmation flow: dangerous ops need user approval
+                    if "[CONFIRM_REQUIRED]" in blocked and on_progress:
+                        try:
+                            confirm_detail = json.dumps({
+                                "tool": t_name,
+                                "args": _brief_args(t_args),
+                                "reason": blocked.replace("[CONFIRM_REQUIRED] ", ""),
+                            }, ensure_ascii=False)
+                            approved = await on_progress(round_num + 1, "confirm_required", confirm_detail)
+                            if approved is True:
+                                logger.info("User approved dangerous op: %s", t_name)
+                            else:
+                                logger.info("User rejected dangerous op: %s", t_name)
+                                return tc, f"[SKIPPED] 用户拒绝执行: {blocked.replace('[CONFIRM_REQUIRED] ', '')}"
+                        except Exception:
+                            return tc, f"[SKIPPED] 确认超时，跳过: {t_name}"
+                    else:
+                        logger.info("Tool %s blocked by pre-hook: %s", t_name, blocked[:100])
+                        return tc, blocked
 
                 # ── Idempotency key for write operations ──
                 _idem_key = ""
@@ -665,6 +682,16 @@ async def react_loop(
                 memory.update_state("last_tool", tool_name)
                 memory.update_state("rounds_completed", round_num + 1)
 
+                # ── TodoList progress: push task list to caller ──
+                if tool_name == "todo_manage" and on_progress:
+                    try:
+                        import json as _json
+                        _tasks = memory.state.get("_tasks", [])
+                        if _tasks:
+                            await on_progress(round_num + 1, "todo_update", _json.dumps(_tasks, ensure_ascii=False))
+                    except Exception:
+                        pass
+
                 # ── Strategy tracking with error classification ──
                 error_kind = classify_tool_error(compressed)
                 is_failure = error_kind != ToolErrorKind.OK
@@ -762,6 +789,7 @@ async def react_loop(
             result_meta["tools_used"] = list({f.source for f in memory.facts})
             result_meta["strategies_tried"] = strategies_tried
             result_meta["disabled_tools"] = list(disabled_tools)
+            result_meta["_tasks"] = memory.state.get("_tasks", [])
 
     # Run with overall timeout
     try:

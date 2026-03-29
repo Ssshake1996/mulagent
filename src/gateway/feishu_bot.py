@@ -46,6 +46,7 @@ logger = logging.getLogger("feishu_bot")
 
 # ── Global resources (initialized once) ──────────────────────────────
 _react_params: dict[str, Any] = {}  # params for run_react()
+_llm_manager: Any = None  # LLMManager instance for model switching
 _lark_client: lark.Client | None = None
 _db_session_factory = None
 _session_mgr: SessionManager | None = None
@@ -69,6 +70,10 @@ _FEEDBACK_TASKS_MAX = 200
 
 # Running tasks: task_key → asyncio.Event (set = cancelled)
 _running_tasks: dict[str, asyncio.Event] = {}
+
+# Confirmation mechanism: dangerous ops wait for user approval via card buttons
+_confirm_events: dict[str, asyncio.Event] = {}
+_confirm_results: dict[str, bool] = {}
 
 
 # Tool display names for progress
@@ -96,12 +101,13 @@ _TOOL_LABELS: dict[str, str] = {
 
 def _init_resources():
     """Initialize all shared resources (called once at startup)."""
-    global _react_params, _lark_client, _db_session_factory, _TASK_TIMEOUT, _session_mgr
+    global _react_params, _lark_client, _db_session_factory, _TASK_TIMEOUT, _session_mgr, _llm_manager
 
     settings = get_settings()
 
     # LLM
-    llm_manager = LLMManager()
+    _llm_manager = LLMManager()
+    llm_manager = _llm_manager
     default_llm = llm_manager.default
 
     # Database (optional)
@@ -309,6 +315,7 @@ class ProgressTracker:
         self.current_round = 0
         self.actions: list[str] = []  # completed action lines
         self.cancelled = False
+        self.tasks: list[dict] = []   # todo_manage task list
 
     def _build_progress_card(self, text: str) -> str:
         """Build a progress card with cancel button."""
@@ -335,6 +342,11 @@ class ProgressTracker:
             for action in self.actions[-6:]:  # Show last 6 actions
                 lines.append(action)
 
+        # Render task list if available
+        if self.tasks:
+            lines.append("")
+            lines.append(self._render_tasks())
+
         if self.current_round > 0:
             # Progress bar with percentage
             pct = min(95, int(self.current_round / self.max_rounds * 100))
@@ -346,6 +358,59 @@ class ProgressTracker:
         elapsed = time.monotonic() - self.start
         lines.append(f"⏱ {elapsed:.1f}s")
         return "\n".join(lines) if lines else "🔄 **启动中**..."
+
+    def _render_tasks(self) -> str:
+        """Render task list with time info."""
+        done = sum(1 for t in self.tasks if t.get("status") == "done")
+        parts = [f"📌 **任务清单** [{done}/{len(self.tasks)}]"]
+        for t in self.tasks:
+            status = t.get("status", "pending")
+            created = t.get("created_at", 0)
+            ts_created = time.strftime("%H:%M:%S", time.localtime(created)) if created else ""
+            if status == "done":
+                done_at = t.get("done_at", 0)
+                if done_at and created:
+                    dur = done_at - created
+                    dur_str = f"{dur:.0f}s" if dur < 60 else f"{dur / 60:.0f}m{dur % 60:.0f}s"
+                    parts.append(f"  ✅ #{t['id']} {t['text']}  ({ts_created}, {dur_str})")
+                else:
+                    parts.append(f"  ✅ #{t['id']} {t['text']}  ({ts_created} ✓)")
+            elif status == "in_progress":
+                parts.append(f"  🔄 #{t['id']} {t['text']}  ({ts_created} 进行中...)")
+            else:
+                parts.append(f"  ○ #{t['id']} {t['text']}  ({ts_created})")
+        return "\n".join(parts)
+
+    def render_task_summary(self) -> str:
+        """Render a final summary of tasks for prepending to the result."""
+        if not self.tasks:
+            return ""
+        done = sum(1 for t in self.tasks if t.get("status") == "done")
+        total = len(self.tasks)
+        # Calculate total elapsed
+        created_times = [t.get("created_at", 0) for t in self.tasks if t.get("created_at")]
+        done_times = [t.get("done_at", 0) for t in self.tasks if t.get("done_at")]
+        total_dur = ""
+        if created_times and done_times:
+            dur = max(done_times) - min(created_times)
+            total_dur = f"  总耗时 {dur:.0f}s" if dur < 60 else f"  总耗时 {dur / 60:.0f}m{dur % 60:.0f}s"
+
+        parts = [f"📌 **任务完成情况** [{done}/{total}]{total_dur}"]
+        for t in self.tasks:
+            status = t.get("status", "pending")
+            created = t.get("created_at", 0)
+            if status == "done":
+                done_at = t.get("done_at", 0)
+                dur_str = ""
+                if done_at and created:
+                    dur = done_at - created
+                    dur_str = f" ({dur:.0f}s)" if dur < 60 else f" ({dur / 60:.0f}m{dur % 60:.0f}s)"
+                parts.append(f"  ✅ #{t['id']} {t['text']}{dur_str}")
+            elif status == "skipped":
+                parts.append(f"  ⏭ #{t['id']} {t['text']}")
+            else:
+                parts.append(f"  ⬜ #{t['id']} {t['text']}")
+        return "\n".join(parts)
 
     def update_card(self):
         """Update the progress card with cancel button."""
@@ -361,7 +426,11 @@ class ProgressTracker:
             logger.error("Patch failed: code=%s, msg=%s", resp.code, resp.msg)
 
     async def on_progress(self, round_num: int, action: str, detail: str):
-        """Callback from react_loop for each round/tool call."""
+        """Callback from react_loop for each round/tool call.
+
+        Returns True/False for 'confirm_required' action (user approval).
+        Returns None for all other actions.
+        """
         # Check for cancellation
         cancel_event = _running_tasks.get(self.task_key)
         if cancel_event and cancel_event.is_set():
@@ -370,7 +439,16 @@ class ProgressTracker:
 
         self.current_round = round_num
 
-        if action == "tool_call" and detail:
+        # ── Dangerous operation confirmation (like Claude Code) ──
+        if action == "confirm_required" and detail:
+            return await self._handle_confirm(detail)
+
+        if action == "todo_update" and detail:
+            try:
+                self.tasks = json.loads(detail)
+            except Exception:
+                pass
+        elif action == "tool_call" and detail:
             label = _TOOL_LABELS.get(detail, detail)
             self.actions.append(f"🔧 [{round_num}] {label}")
         elif action == "step_text" and detail:
@@ -383,6 +461,93 @@ class ProgressTracker:
             pass  # Just update round number
 
         self.update_card()
+        return None
+
+    async def _handle_confirm(self, detail: str) -> bool:
+        """Show confirmation card and wait for user response."""
+        try:
+            info = json.loads(detail)
+        except Exception:
+            return False
+
+        tool_name = info.get("tool", "?")
+        args_str = info.get("args", "")
+        reason = info.get("reason", "危险操作")
+
+        confirm_id = f"{self.task_key}_{time.monotonic():.0f}"
+        event = asyncio.Event()
+        _confirm_events[confirm_id] = event
+
+        # Build confirmation card with approve/reject buttons
+        confirm_text = (
+            f"⚠️ **需要确认**\n\n"
+            f"**工具**: `{tool_name}`\n"
+            f"**操作**: {args_str}\n"
+            f"**原因**: {reason}\n\n"
+            f"请确认是否执行此操作："
+        )
+        elements = [
+            {"tag": "markdown", "content": confirm_text},
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "✅ 确认执行"},
+                        "type": "primary",
+                        "value": {"action": "confirm_op", "confirm_id": confirm_id, "approved": True},
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "❌ 拒绝"},
+                        "type": "danger",
+                        "value": {"action": "confirm_op", "confirm_id": confirm_id, "approved": False},
+                    },
+                ],
+            },
+        ]
+        card_json = json.dumps({"elements": elements}, ensure_ascii=False)
+
+        # Patch current card to show confirmation
+        body = PatchMessageRequestBody.builder().content(card_json).build()
+        req = PatchMessageRequest.builder() \
+            .message_id(self.status_msg_id) \
+            .request_body(body) \
+            .build()
+        resp = _lark_client.im.v1.message.patch(req)
+        if not resp.success():
+            logger.error("Confirm card patch failed: %s", resp.msg)
+
+        # Wait for user response (timeout 120s)
+        try:
+            await asyncio.wait_for(event.wait(), timeout=120)
+            approved = _confirm_results.pop(confirm_id, False)
+        except asyncio.TimeoutError:
+            approved = False
+            # Update card to show timeout
+            timeout_text = f"⏰ **确认超时** (120s)\n\n操作已跳过: `{tool_name}`"
+            self._patch_simple(timeout_text)
+        finally:
+            _confirm_events.pop(confirm_id, None)
+
+        if approved:
+            self.actions.append(f"✅ [{self.current_round}] 用户确认: {_TOOL_LABELS.get(tool_name, tool_name)}")
+        else:
+            self.actions.append(f"❌ [{self.current_round}] 用户拒绝: {_TOOL_LABELS.get(tool_name, tool_name)}")
+
+        # Restore progress card
+        self.update_card()
+        return approved
+
+    def _patch_simple(self, text: str):
+        """Patch card with simple markdown text."""
+        card_json = json.dumps({"elements": [{"tag": "markdown", "content": text}]}, ensure_ascii=False)
+        body = PatchMessageRequestBody.builder().content(card_json).build()
+        req = PatchMessageRequest.builder() \
+            .message_id(self.status_msg_id) \
+            .request_body(body) \
+            .build()
+        _lark_client.im.v1.message.patch(req)
 
 
 # ── Streaming task execution ─────────────────────────────────────────
@@ -617,6 +782,8 @@ _HELP_TEXT = """\
 | `/directives` | 查看持久化约束规则 |
 | `/directives add <规则>` | 添加约束（如"删除前要确认"） |
 | `/directives del <序号>` | 删除指定约束 |
+| `/model` | 查看可用模型列表 |
+| `/model <id>` | 切换到指定模型 |
 | `/experience` | 查看经验库统计（分层分级） |
 | `/clear` | 清除当前会话所有对话 |
 | `/help` | 显示本帮助 |
@@ -689,6 +856,41 @@ def _on_message(data) -> None:
             session_id = _session_mgr.new_session(user_id, chat_id)
             _reply_card(message_id, f"✅ 新会话已创建\n\nSession: `{session_id}`")
             logger.info("New session for user %s (chat %s): %s", user_id, chat_id[-8:], session_id)
+        return
+
+    # Handle /model command — list or switch models
+    if cmd == "/model":
+        if _llm_manager:
+            models = _llm_manager.list_models()
+            cur = _llm_manager.default_id
+            lines = ["**可用模型**\n"]
+            for m in models:
+                marker = " ← 当前" if m["id"] == cur else ""
+                lines.append(f"- `{m['id']}`: {m.get('name', m['model'])} ({m['model']}){marker}")
+            lines.append("\n发送 `/model <id>` 切换模型")
+            _reply_card(message_id, "\n".join(lines))
+        else:
+            _reply_card(message_id, "LLM 管理器未初始化。")
+        return
+
+    if cmd.startswith("/model "):
+        model_id = text.strip().split(maxsplit=1)[1].strip()
+        if _llm_manager:
+            new_llm = _llm_manager.get(model_id)
+            if new_llm is None:
+                models = _llm_manager.list_models()
+                available = ", ".join(f"`{m['id']}`" for m in models)
+                _reply_card(message_id, f"未找到模型 `{model_id}`\n\n可用模型: {available}")
+            else:
+                _react_params["llm"] = new_llm
+                from common.vector import set_shared_llm
+                set_shared_llm(new_llm)
+                model_cfg = get_settings().llm.get_model(model_id)
+                desc = model_cfg.model if model_cfg else model_id
+                _reply_card(message_id, f"✅ 模型已切换\n\n当前模型: `{model_id}` ({desc})")
+                logger.info("Model switched to %s for user %s", model_id, user_id)
+        else:
+            _reply_card(message_id, "LLM 管理器未初始化。")
         return
 
     # Handle /resume command — list or switch sessions
@@ -923,10 +1125,14 @@ async def _process_task(
         header = "\n".join(action_lines) if action_lines else "✅ 直接回答"
         timing_total = f"⏱ 总耗时 {elapsed:.1f}s"
 
+        # Task summary (if agent used todo_manage)
+        task_summary = tracker.render_task_summary()
+        separator = f"\n\n{task_summary}\n\n---\n\n" if task_summary else "\n\n---\n\n"
+
         if status == "completed":
-            final_text = f"{header}\n{timing_total}\n\n---\n\n{output}"
+            final_text = f"{header}\n{timing_total}{separator}{output}"
         else:
-            final_text = f"{header}\n{timing_total}\n\n⚠️ 状态: {status}\n\n{output}"
+            final_text = f"{header}\n{timing_total}{separator}⚠️ 状态: {status}\n\n{output}"
 
         # Register for feedback tracking
         _feedback_tasks[task_key] = {
@@ -1062,6 +1268,19 @@ def _on_card_action(data):
                 logger.info("Cancel requested by user %s for task %s", user_id, task_key)
                 return _make_toast("info", "⏹ 正在取消任务...")
             return _make_toast("info", "任务已完成或不存在")
+
+        if action_type == "confirm_op":
+            # ── Dangerous operation confirmation ──
+            confirm_id = value.get("confirm_id", "")
+            approved = value.get("approved", False)
+            event = _confirm_events.get(confirm_id)
+            if event:
+                _confirm_results[confirm_id] = approved
+                event.set()
+                emoji = "✅" if approved else "❌"
+                logger.info("Confirm %s by user %s: confirm_id=%s", emoji, user_id, confirm_id)
+                return _make_toast("info", f"{emoji} {'已确认执行' if approved else '已拒绝'}")
+            return _make_toast("info", "确认请求已过期")
 
         if action_type == "retry":
             # ── Retry failed task ──

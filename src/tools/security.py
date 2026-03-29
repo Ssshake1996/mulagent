@@ -226,6 +226,10 @@ def _run_user_hook(phase: str, tool_name: str, args: dict) -> str | None:
         result = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=10,
         )
+        if phase == "pre" and result.returncode == 2:
+            # Exit code 2 = needs user confirmation (like Claude Code)
+            reason = result.stderr.strip()[:200] or "dangerous operation"
+            return f"[CONFIRM_REQUIRED] {tool_name}: {reason}"
         if phase == "pre" and result.returncode != 0:
             return (
                 f"[BLOCKED by {phase} hook] {tool_name}: "

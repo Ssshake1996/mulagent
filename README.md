@@ -119,7 +119,7 @@ User --------+--- CLI TUI / Headless ------+---> SessionManager ---> run_react()
 - **外部项目吸收**：给定 Git URL 自动分析并融合能力（`mulagent --absorb <url>`）
 - **智能上下文压缩**：语义分类 + 话题归档 + 相关性驱动动态压缩
 - **计划模式**：复杂任务先提交计划供用户确认，避免盲目执行
-- **用户可配置 Hooks**：pre/post 工具钩子，支持自动备份、审计日志
+- **安全钩子 + 危险操作确认**：危险命令弹飞书确认卡片（类似 Claude Code），文件修改自动备份，Git 操作自动 stash
 - **结构化审计日志**：JSON 格式记录每次工具调用，便于合规审计
 - **多通道交付**：CLI TUI、Headless REPL、HTTP API、飞书 Bot
 - **全部数据库可选**：PostgreSQL/Redis/Qdrant 不可用时优雅降级

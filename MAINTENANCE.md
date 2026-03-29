@@ -73,7 +73,7 @@ mul-agent/
 │   │   ├── git_tools.py           #   git_ops, github_ops
 │   │   ├── knowledge_rag.py       #   Chunk + Embedding RAG
 │   │   ├── sandbox.py             #   Docker 沙箱执行
-│   │   ├── security.py            #   工具安全钩子 + 用户可配置 Shell Hooks
+│   │   ├── security.py            #   工具安全钩子 + 用户可配置 Shell Hooks（含危险操作确认）
 │   │   └── plugins.py             #   插件系统
 │   ├── gateway/                   # 接入层
 │   │   ├── adapter.py             #   SessionManager + 进度协议（v0.5.0 新增）
@@ -116,7 +116,11 @@ mul-agent/
 │   └── prompts/                   # LLM 提示词模板（legacy，保留兼容）
 ├── scripts/
 │   ├── setup.sh                   # Linux 一键安装脚本（含数据库选择）
-│   └── setup.ps1                  # Windows 一键安装脚本（PowerShell）
+│   ├── setup.ps1                  # Windows 一键安装脚本（PowerShell）
+│   └── hooks/                     # 工具安全钩子脚本
+│       ├── guard_shell.sh         #   Shell 命令：危险操作弹确认 + 审计日志
+│       ├── guard_file.sh          #   文件写入/编辑：自动备份 + 审计日志
+│       └── guard_git.sh           #   Git 操作：危险操作弹确认 + auto-stash
 ├── tests/
 │   ├── unit/                      # 单元测试（17 个文件，308+ 个用例）
 │   ├── integration/               # 集成测试（trace 持久化）
@@ -496,10 +500,12 @@ react:
 
 hooks:                                # 用户可配置的工具钩子（可选）
   pre:
-    write_file: "cp {path} {path}.bak 2>/dev/null; true"     # 写入前自动备份
-    execute_shell: "echo 'exec: {command}' >> /tmp/audit.log" # 审计日志
+    write_file: "bash scripts/hooks/guard_file.sh '{path}' write"    # 自动备份
+    edit_file: "bash scripts/hooks/guard_file.sh '{path}' edit"      # 自动备份
+    execute_shell: "bash scripts/hooks/guard_shell.sh '{command}'"   # 危险命令确认
+    git_ops: "bash scripts/hooks/guard_git.sh '{action}' '{args}'"   # Git 安全防护
   post:
-    write_file: "echo 'wrote {path}' >> /tmp/audit.log"
+    write_file: "echo ... >> data/audit/file_audit.jsonl"            # 审计日志
 
 embedding:
   api_key: "..."                      # Embedding API Key
@@ -606,7 +612,7 @@ metadata:
 | 计划模式 (plan_submit) | 复杂任务先提交计划供用户确认，避免盲目执行 |
 | 后台子 agent 执行 | 独立任务不阻塞主循环，提升并发效率 |
 | Worktree 隔离 | 文件变更在临时 worktree 中执行，保护主工作目录 |
-| 用户可配置 Shell Hooks | pre/post 钩子支持自定义审计、备份等操作 |
+| 用户可配置 Shell Hooks | pre/post 钩子支持审计、备份、危险操作确认（exit 2 触发飞书确认卡片） |
 | 结构化审计日志 | JSON 格式记录每次工具调用，便于合规审计和问题追踪 |
 | glob_search/grep_search 优先于 execute_shell | 专用工具更安全、更高效，减少 Shell 注入风险 |
 
@@ -628,8 +634,19 @@ metadata:
 - **delegate 增强**：
   - `background=true`：`asyncio.ensure_future()` 异步执行，返回 bg_id
   - `isolation="worktree"`：临时 Git worktree 隔离执行，无变更自动清理
-- **用户可配置 Shell Hooks**：`settings.yaml` 中定义 pre/post 工具钩子，支持自动备份、审计日志等
-- **结构化审计日志**：`mulagent.audit` logger，JSON 格式记录每次工具调用（工具名、参数、耗时、状态）
+- **用户可配置 Shell Hooks + 危险操作确认**：
+  - `settings.yaml` 中定义 pre/post 工具钩子
+  - 内置 3 个安全脚本（`scripts/hooks/`）：
+    - `guard_shell.sh`：危险 Shell 命令弹飞书确认卡片（如 `rm -rf /home`、`curl|bash`、`DROP TABLE`），安全命令记审计日志
+    - `guard_file.sh`：写入/编辑前自动备份到 `data/backups/`（带时间戳，保留最近 50 版本）
+    - `guard_git.sh`：force push/reset --hard 弹确认，checkout/rebase 前自动 git stash
+  - Hook exit code 协议：0=放行, 1=阻止, 2=需用户确认（飞书弹卡片）
+  - 确认卡片 120 秒超时自动跳过
+- **飞书 TodoList 实时进度**：
+  - ReAct 执行期间，`todo_manage` 调用实时推送到飞书卡片（含创建时间、耗时）
+  - 最终结果前展示任务完成概览（完成率 + 每步耗时 + 总耗时）
+- **飞书 `/model` 命令**：查看可用模型列表 / 切换模型
+- **结构化审计日志**：`mulagent.audit` logger + `data/audit/*.jsonl`，JSON 格式记录工具调用、文件变更、Git 操作
 - **分层分级经验系统**（L1 原子 / L2 策略 / L3 领域）：
   - 多维评分：quality × freshness(30天半衰期) × use_bonus × success_bonus × tier_bonus
   - 自动去重合并（同层 similarity > 0.85）

@@ -49,6 +49,15 @@ llm:
     #   base_url: "http://localhost:11434/v1"
     #   max_tokens: 4096
 
+# Embedding 模型配置（用于语义检索和经验库）
+# 支持 OpenAI 兼容的 embedding API
+# 未配置时降级为 LLM 关键词提取 + 语义哈希
+embedding:
+  model: "text-embedding-v3"
+  api_key: ""                 # 留空时尝试复用 LLM 的 API key
+  base_url: ""                # 留空时尝试复用 LLM 的 base_url
+  dimensions: 1024
+
 # ReAct 推理引擎配置
 react:
   max_rounds: 30             # 最大推理轮数（复杂任务建议 30+）
@@ -62,6 +71,35 @@ feishu:
   app_secret: ""           # 飞书应用 App Secret
   autostart: false         # 是否开机自启（true 时 enable systemd 服务）
 
+sandbox:
+  enabled: true                # 启用 Docker 沙箱（不可用时自动降级为直接执行）
+  image: "python:3.12-slim"    # 沙箱镜像
+  memory_limit: "512m"         # 内存限制
+  cpu_limit: 1.0               # CPU 核数限制
+  network: true                # 是否允许网络
+  workdir: "/workspace"        # 容器内工作目录
+
 security:
   max_sandbox_timeout_seconds: 300
   max_sandbox_memory_mb: 512
+
+observability:
+  enable_prometheus: true          # 暴露 /metrics 端点
+  enable_tracing: true             # 启用分布式追踪
+  alert_webhook_url: ""            # 告警 webhook（可选，如飞书/钉钉 webhook）
+  metrics_retention_minutes: 60    # 内存指标保留时间（分钟）
+
+# ── 工具钩子（可选）──────────────────────────────────────────────
+# 在工具执行前/后自动运行 shell 命令
+# pre hook 返回非 0 → 阻止工具执行；post hook 仅记录
+# {path}, {command}, {action}, {args} 等自动替换为工具实际参数
+#
+# hooks:
+#   pre:
+#     write_file: "bash scripts/hooks/guard_file.sh '{path}' write"
+#     edit_file: "bash scripts/hooks/guard_file.sh '{path}' edit"
+#     execute_shell: "bash scripts/hooks/guard_shell.sh '{command}'"
+#     git_ops: "bash scripts/hooks/guard_git.sh '{action}' '{args}'"
+#   post:
+#     write_file: "echo '{\"ts\":\"'$(date -Iseconds)'\",\"event\":\"WRITE_DONE\",\"file\":\"{path}\"}' >> data/audit/file_audit.jsonl"
+#     code_run: "echo '{\"ts\":\"'$(date -Iseconds)'\",\"event\":\"CODE_DONE\",\"lang\":\"{language}\"}' >> data/audit/code_audit.jsonl"
