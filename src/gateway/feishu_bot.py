@@ -89,7 +89,6 @@ _TOOL_LABELS: dict[str, str] = {
     "edit_file": "文件编辑",
     "delegate": "专家委托",
     "deep_research": "深度研究",
-    "security_scan": "安全扫描",
     "docs_lookup": "文档查询",
     "codemap": "代码结构分析",
     "browser_fetch": "浏览器渲染",

@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
-
 logger = logging.getLogger(__name__)
 
 # Lazy-initialized global client

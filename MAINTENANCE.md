@@ -90,7 +90,6 @@ mul-agent/
 │   │   ├── db.py                  #   PostgreSQL 异步连接
 │   │   ├── tokenizer.py           #   Token 计数与截断
 │   │   ├── retry.py               #   指数退避重试
-│   │   ├── timing.py              #   性能计时
 │   │   └── logging_config.py      #   结构化日志
 │   ├── evolution/                 # 自进化层
 │   │   ├── tool_learning.py       #   UCB1 工具学习算法
@@ -113,7 +112,6 @@ mul-agent/
 │   ├── tools.yaml                 # 工具配置
 │   ├── knowledge/                 # 角色知识库（18 个 .md 文件：python/go/rust/java 等）
 │   ├── skills/                    # 外部 Skill 目录（自动注册为 delegate 角色）
-│   └── prompts/                   # LLM 提示词模板（legacy，保留兼容）
 ├── scripts/
 │   ├── setup.sh                   # Linux 一键安装脚本（含数据库选择）
 │   ├── setup.ps1                  # Windows 一键安装脚本（PowerShell）

@@ -6,7 +6,6 @@ Usage: mulagent init
 from __future__ import annotations
 
 import shutil
-from pathlib import Path
 
 # ANSI colors
 _GREEN = "\033[32m"

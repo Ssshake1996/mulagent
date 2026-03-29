@@ -9,7 +9,6 @@ import logging
 import re
 from typing import Any
 
-from tools.base import ToolDef
 
 logger = logging.getLogger(__name__)
 
@@ -243,51 +242,3 @@ def _run_user_hook(phase: str, tool_name: str, args: dict) -> str | None:
         logger.debug("Hook failed: %s", e)
 
     return None
-
-
-# ── Standalone security scan tool ─────────────────────────────────────
-
-async def _security_scan(params: dict[str, Any], **deps: Any) -> str:
-    """Scan text for security issues."""
-    text = params.get("text", "")
-    if not text:
-        return "Error: text is required"
-
-    results = []
-
-    # Check sensitive data
-    sensitive = scan_sensitive(text)
-    if sensitive:
-        results.append("**Sensitive Data Found:**")
-        for s in sensitive:
-            results.append(f"  - {s['type']}: {s['match']} (pos: {s['position']})")
-    else:
-        results.append("No sensitive data detected.")
-
-    # Check injection
-    injections = detect_injection(text)
-    if injections:
-        results.append("\n**Potential Prompt Injection Detected:**")
-        for i in injections:
-            results.append(f"  - Pattern: {i}")
-    else:
-        results.append("No prompt injection patterns detected.")
-
-    return "\n".join(results)
-
-
-SECURITY_SCAN = ToolDef(
-    name="security_scan",
-    description="Scan text for sensitive data (API keys, passwords, PII) and prompt injection attempts.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "text": {
-                "type": "string",
-                "description": "The text to scan for security issues",
-            },
-        },
-        "required": ["text"],
-    },
-    fn=_security_scan,
-)
