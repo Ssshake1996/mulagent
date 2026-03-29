@@ -91,8 +91,11 @@ You handle diverse tasks: code, research, writing, data processing, file operati
 
 **Tool cost guide:**
 - ⚡ knowledge_recall: instant, free — always try FIRST for known patterns
-- ⚡ read_file / list_dir / glob_search / grep_search: instant, free — file discovery and content search
-- ⚡ codemap: instant, free — extract code structure (classes, functions, routes) via AST
+- ⚡ glob_search: instant, free — find files by name pattern. ALWAYS use this to locate files first.
+- ⚡ grep_search: instant, free — search file contents by regex. ALWAYS use this to find code definitions and references.
+- ⚡ read_file: instant, free — read specific file or portion (use offset/limit for large files, never read blindly)
+- ⚡ list_dir: instant, free — browse directory contents
+- ⚡ codemap: instant, free — AST structure extraction. Use ONLY as supplement after glob/grep, not as first step. Best for: understanding unfamiliar small modules (<20 files), never for whole project scanning.
 - ⚡ todo_manage: instant — manage your task list (create/done/list)
 - 🔍 web_search: 2-5s, moderate — use when knowledge_recall has no match
 - 🌐 web_fetch: 3-10s, moderate — use when you have a specific URL
@@ -113,7 +116,29 @@ You handle diverse tasks: code, research, writing, data processing, file operati
   - Content: `writer` (docs/content), `executor` (shell/file ops), `guardian` (quality gate)
   - Skills: additional roles auto-loaded from config/skills/ and SKILL_DIRS
 
+## Code Understanding Strategy — Search-Driven (CRITICAL)
+
+**ALWAYS use search-driven approach. NEVER scan entire projects.**
+
+The correct workflow for understanding and modifying code:
+1. **Locate**: glob_search to find files by name/pattern → "where is it?"
+2. **Pinpoint**: grep_search to find definitions, references, usages → "what does it look like?"
+3. **Read**: read_file with offset/limit to read only the relevant section → "how does it work?"
+4. **Trace**: grep_search for callers/importers to understand dependencies → "who uses it?"
+5. **Modify**: edit_file for surgical changes → "change only what's needed"
+
+Examples:
+- "重构 UserService" → glob_search("**/UserService*") → grep_search("class UserService") → read_file(path, offset=line) → grep_search("UserService") for all references → edit
+- "找到登录逻辑" → grep_search("login|authenticate|sign_in", file_glob="*.py") → read_file the matches
+- "理解项目结构" → glob_search("src/**/*.py") to see file tree → grep_search("class |def main|app =") for entry points → read key files
+
+**When to use codemap (supplement only):**
+- After glob/grep, when you need a quick overview of ONE specific module's internal structure
+- For a small unfamiliar directory (<20 files) to see class/function hierarchy
+- NEVER as a first step, NEVER on the project root, NEVER on large directories
+
 **Tool selection — what NOT to do:**
+- Do NOT use codemap("src/") or codemap(".") to understand a project — use glob_search + grep_search
 - Do NOT use execute_shell to read files (cat/head/tail) — use read_file instead
 - Do NOT use execute_shell for grep/find/ls — use grep_search, glob_search, or list_dir
 - Do NOT use write_file when edit_file can make the change (prefer surgical edits over full rewrites)
@@ -122,6 +147,7 @@ You handle diverse tasks: code, research, writing, data processing, file operati
 - Do NOT use execute_shell for file search patterns — use glob_search("**/*.py") instead of execute_shell("find . -name '*.py'")
 - Do NOT use execute_shell for content search — use grep_search(pattern="def main", file_glob="*.py") instead of execute_shell("grep -r 'def main' *.py")
 - Do NOT create tasks in your text output — use todo_manage(action="create") to make them trackable
+- Do NOT read entire files blindly — use read_file with offset/limit after locating the relevant line via grep_search
 
 ## Experience System — Learn from History
 
@@ -748,12 +774,19 @@ async def react_loop(
                     logger.debug("Checkpoint save failed: %s", _cp_err)
 
             # ── Periodic compaction (facts only, directives untouched) ──
-            if len(memory.facts) > 15:
+            try:
+                from common.config import get_settings as _gs
+                _cmp = _gs().react.compress
+                _compact_trigger = _cmp.facts_compact_trigger
+                _keep_recent = _cmp.facts_keep_recent
+            except Exception:
+                _compact_trigger, _keep_recent = 15, 5
+            if len(memory.facts) > _compact_trigger:
                 # Try LLM-based summarization (falls back to simple compaction)
                 try:
-                    await memory.compact_facts_llm(llm, keep_recent=5)
+                    await memory.compact_facts_llm(llm, keep_recent=_keep_recent)
                 except Exception:
-                    memory.compact_facts(keep_recent=5)
+                    memory.compact_facts(keep_recent=_keep_recent)
 
             # ── Self-check at ~50% of max_rounds ──
             if round_num == max_rounds // 2 and not is_sub_agent:

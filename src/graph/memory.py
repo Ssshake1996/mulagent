@@ -332,15 +332,20 @@ async def extract_directives(user_input: str, llm: Any = None) -> list[str]:
     return fast
 
 
-def compress_tool_result(raw: str, tool_name: str, max_tokens: int = 1500) -> str:
+def compress_tool_result(raw: str, tool_name: str, max_tokens: int = 0) -> str:
     """Compress a tool result before storing in Facts.
 
     Different tools have different compression strategies.
-    Default limit is 1500 tokens (~4000 chars) — enough for structured data
-    while still preventing context explosion.
+    Default limit from config (react.compress.tool_result_max_tokens, default 1500).
 
     Uses token-based truncation for accurate context management.
     """
+    if max_tokens <= 0:
+        try:
+            from common.config import get_settings
+            max_tokens = get_settings().react.compress.tool_result_max_tokens
+        except Exception:
+            max_tokens = 1500
     from common.tokenizer import estimate_tokens, truncate_to_tokens, truncate_middle
 
     if estimate_tokens(raw) <= max_tokens:

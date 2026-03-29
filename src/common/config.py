@@ -131,6 +131,33 @@ class EmbeddingSettings(BaseSettings):
     dimensions: int = 1024    # output vector dimensions
 
 
+class CompressSettings(BaseSettings):
+    """Context compression thresholds and parameters."""
+    # ── Facts 压缩 ──
+    facts_compact_trigger: int = 15        # facts 超过此数触发压缩
+    facts_keep_recent: int = 5             # 压缩时保留最近 N 条
+    tool_result_max_tokens: int = 1500     # 单个工具结果截断上限 (token)
+
+    # ── 上下文预算 ──
+    context_max_chars: int = 8000          # 上下文字符预算 (0=自动: max_tokens*0.5*4)
+
+    # ── 四级压缩阈值 (相关性分数) ──
+    level_full: float = 0.7                # ≥0.7 → 完整保留
+    level_summary: float = 0.3             # 0.3~0.7 → 摘要
+    level_title: float = 0.1              # 0.1~0.3 → 仅标题
+    # <0.1 → 隐藏
+
+    # ── 相关性三信号权重 ──
+    weight_keyword: float = 0.5            # 关键词重叠 (Jaccard)
+    weight_recall: float = 0.3             # 召回意图检测
+    weight_decay: float = 0.2              # 时间衰减
+
+    # ── 话题归档 ──
+    archive_threshold: int = 30            # 自动归档：超过 N 轮归档冷话题
+    archive_manual_threshold: int = 6      # 手动压缩时的归档阈值
+    decay_half_life_hours: float = 24.0    # 时间衰减半衰期（小时）
+
+
 class ReactSettings(BaseSettings):
     """ReAct orchestrator configuration."""
     max_rounds: int = 30           # 最大推理轮数（复杂任务需要更多轮）
@@ -138,6 +165,7 @@ class ReactSettings(BaseSettings):
     tool_timeout: int = 120        # 单工具超时（秒）
     max_parallel_tools: int = 5    # 工具并行执行上限，1 = 串行
     max_conversation_pairs: int = 4  # 保留的对话轮数
+    compress: CompressSettings = Field(default_factory=CompressSettings)
 
 
 class SandboxSettings(BaseSettings):

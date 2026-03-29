@@ -290,14 +290,29 @@ LEVEL_TITLE = "title"       # 0.1–0.3 — just topic title
 LEVEL_HIDDEN = "hidden"     # <0.1 — omit entirely
 
 
+def _get_compress_cfg():
+    """Load compression config, fallback to defaults."""
+    try:
+        from common.config import get_settings
+        return get_settings().react.compress
+    except Exception:
+        return None
+
+
 def compute_relevance(topic: Topic, query: str, now_ts: float | None = None) -> float:
     """Compute relevance score of a topic to the current query.
 
-    Three signals:
-    1. Keyword overlap (Jaccard similarity) — weight 0.5
-    2. Recall intent detection             — weight 0.3
-    3. Time decay                          — weight 0.2
+    Three signals (weights from config react.compress):
+    1. Keyword overlap (Jaccard similarity)
+    2. Recall intent detection
+    3. Time decay
     """
+    cfg = _get_compress_cfg()
+    w_kw = cfg.weight_keyword if cfg else 0.5
+    w_recall = cfg.weight_recall if cfg else 0.3
+    w_decay = cfg.weight_decay if cfg else 0.2
+    half_life = cfg.decay_half_life_hours if cfg else 24.0
+
     if not query:
         return 0.3  # neutral
 
@@ -333,20 +348,24 @@ def compute_relevance(topic: Topic, query: str, now_ts: float | None = None) -> 
     now = now_ts or time.time()
     topic_time = _parse_ts(topic.updated_at) if topic.updated_at else now
     age_hours = max(0, (now - topic_time) / 3600)
-    # Half-life = 24 hours
-    decay_score = math.exp(-0.693 * age_hours / 24)
+    decay_score = math.exp(-0.693 * age_hours / half_life)
 
-    relevance = 0.5 * kw_score + 0.3 * recall_score + 0.2 * decay_score
+    relevance = w_kw * kw_score + w_recall * recall_score + w_decay * decay_score
     return min(1.0, relevance)
 
 
 def relevance_to_level(score: float) -> str:
     """Map relevance score to compression level."""
-    if score >= 0.7:
+    cfg = _get_compress_cfg()
+    t_full = cfg.level_full if cfg else 0.7
+    t_summary = cfg.level_summary if cfg else 0.3
+    t_title = cfg.level_title if cfg else 0.1
+
+    if score >= t_full:
         return LEVEL_FULL
-    if score >= 0.3:
+    if score >= t_summary:
         return LEVEL_SUMMARY
-    if score >= 0.1:
+    if score >= t_title:
         return LEVEL_TITLE
     return LEVEL_HIDDEN
 
@@ -432,15 +451,19 @@ class ContextAssembler:
     3. Compress by relevance to current query
     """
 
-    def __init__(self, max_chars: int = 8000):
+    def __init__(self, max_chars: int = 0):
         """
         Args:
             max_chars: Approximate character budget for the assembled context.
+                       0 = read from config (react.compress.context_max_chars, default 8000).
                        ~4 chars per token, so 8000 chars ≈ 2000 tokens.
         """
         self.classifier = TurnClassifier()
         self.grouper = TopicGrouper()
         self.compressor = SmartCompressor()
+        if max_chars <= 0:
+            cfg = _get_compress_cfg()
+            max_chars = cfg.context_max_chars if cfg else 8000
         self.max_chars = max_chars
 
     def classify_turns(self, turns: list[dict]) -> list[dict]:

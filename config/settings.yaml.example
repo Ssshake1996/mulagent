@@ -65,6 +65,25 @@ react:
   tool_timeout: 120          # 单工具超时（秒）
   max_parallel_tools: 5      # 工具并行执行上限
   max_conversation_pairs: 4  # 保留的对话轮数
+  compress:
+    # Facts 压缩
+    facts_compact_trigger: 15    # facts 超过此数触发压缩
+    facts_keep_recent: 5         # 压缩时保留最近 N 条
+    tool_result_max_tokens: 1500 # 单个工具结果截断上限 (token)
+    # 上下文预算
+    context_max_chars: 8000      # 上下文字符预算 (0=自动: max_tokens*0.5*4)
+    # 四级压缩阈值（相关性分数）
+    level_full: 0.7              # ≥此值 → 完整保留
+    level_summary: 0.3           # ≥此值 → 摘要
+    level_title: 0.1             # ≥此值 → 仅标题；低于此值 → 隐藏
+    # 相关性三信号权重（总和应为 1.0）
+    weight_keyword: 0.5          # 关键词重叠 (Jaccard)
+    weight_recall: 0.3           # 召回意图检测
+    weight_decay: 0.2            # 时间衰减
+    # 话题归档
+    archive_threshold: 30        # 自动归档：超过 N 轮归档冷话题
+    archive_manual_threshold: 6  # 手动压缩（/compress）时的归档阈值
+    decay_half_life_hours: 24.0  # 时间衰减半衰期（小时）
 
 feishu:
   app_id: ""               # 飞书应用 App ID

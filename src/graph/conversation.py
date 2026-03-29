@@ -120,8 +120,13 @@ class ConversationStore:
         # Smart auto-archive: when turns grow large, archive cold topics
         from graph.context_compressor import ContextAssembler
         assembler = ContextAssembler()
+        try:
+            from common.config import get_settings
+            _archive_th = get_settings().react.compress.archive_threshold
+        except Exception:
+            _archive_th = 30
         remaining, newly_archived = assembler.auto_archive(
-            conv["turns"], archive_threshold=30,
+            conv["turns"], archive_threshold=_archive_th,
         )
         if newly_archived:
             archive = conv.get("archive", {"topics": []})
@@ -342,9 +347,14 @@ class ConversationStore:
 
         from graph.context_compressor import ContextAssembler
         assembler = ContextAssembler()
+        try:
+            from common.config import get_settings
+            _manual_th = get_settings().react.compress.archive_manual_threshold
+        except Exception:
+            _manual_th = 6
 
         remaining, newly_archived = assembler.auto_archive(
-            conv["turns"], archive_threshold=6,  # lower threshold for manual compress
+            conv["turns"], archive_threshold=_manual_th,  # lower threshold for manual compress
         )
         if newly_archived:
             archive = conv.get("archive", {"topics": []})
