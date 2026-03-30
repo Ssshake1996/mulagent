@@ -317,6 +317,16 @@ async def _edit_file(params: dict[str, Any], **deps: Any) -> str:
 
     try:
         content = path.read_text(errors="replace")
+
+        # ── mtime conflict detection ──
+        current_mtime = path.stat().st_mtime
+        expected_mtime = params.get("_expected_mtime")
+        if expected_mtime is not None and abs(current_mtime - expected_mtime) > 0.5:
+            return (
+                f"Error: file {path} was modified externally since last read. "
+                "Please read_file again before editing."
+            )
+
         count = content.count(old_text)
 
         if count == 0:
@@ -329,10 +339,19 @@ async def _edit_file(params: dict[str, Any], **deps: Any) -> str:
             )
 
         if count > 1 and not replace_all:
+            # Show locations to help make match unique
+            positions = []
+            start = 0
+            for i in range(min(count, 5)):
+                idx = content.index(old_text, start)
+                line_num = content[:idx].count("\n") + 1
+                positions.append(f"line {line_num}")
+                start = idx + 1
             return (
-                f"Warning: old_text found {count} times in {path}. "
-                "Set replace_all=true to replace all occurrences, "
-                "or provide more context to make the match unique."
+                f"Error: old_text found {count} times in {path} "
+                f"(at {', '.join(positions)}{'...' if count > 5 else ''}). "
+                "Provide more surrounding context to make the match unique, "
+                "or set replace_all=true to replace all occurrences."
             )
 
         if replace_all:
@@ -341,14 +360,28 @@ async def _edit_file(params: dict[str, Any], **deps: Any) -> str:
             new_content = content.replace(old_text, new_text, 1)
         path.write_text(new_content)
 
-        # Calculate diff summary
-        old_lines = old_text.count("\n") + 1
-        new_lines = new_text.count("\n") + 1
+        # ── Generate unified diff for visibility ──
+        import difflib
+        old_lines_list = old_text.splitlines(keepends=True)
+        new_lines_list = new_text.splitlines(keepends=True)
+        diff = list(difflib.unified_diff(
+            old_lines_list, new_lines_list,
+            fromfile=f"a/{path.name}", tofile=f"b/{path.name}", lineterm="",
+        ))
+        diff_text = "\n".join(diff[:30])  # cap at 30 lines
+        if len(diff) > 30:
+            diff_text += f"\n... ({len(diff) - 30} more diff lines)"
+
         replaced = count if replace_all else 1
-        return (
+        old_line_count = old_text.count("\n") + 1
+        new_line_count = new_text.count("\n") + 1
+        summary = (
             f"Edited {path}: replaced {replaced} occurrence{'s' if replaced > 1 else ''} "
-            f"({old_lines} lines → {new_lines} lines, {len(old_text)} chars → {len(new_text)} chars)"
+            f"({old_line_count} lines → {new_line_count} lines)"
         )
+        if diff_text:
+            return f"{summary}\n\n```diff\n{diff_text}\n```"
+        return summary
     except Exception as e:
         return f"Edit error: {e}"
 

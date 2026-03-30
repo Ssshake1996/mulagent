@@ -306,22 +306,147 @@ def classify_task_type(user_input: str) -> str:
     return "general"
 
 
+def _load_project_directives() -> str:
+    """Load project-level directives from .mulagent.md or AGENT.md.
+
+    Searches: CWD → parent directories (up to 5 levels) → home directory.
+    Returns the content or empty string.
+    """
+    from pathlib import Path
+    candidates = [".mulagent.md", "AGENT.md"]
+
+    # Search CWD and up to 5 parent directories
+    cwd = Path.cwd()
+    for _ in range(6):
+        for name in candidates:
+            f = cwd / name
+            if f.is_file():
+                try:
+                    content = f.read_text(errors="replace").strip()
+                    if content:
+                        logger.info("Loaded project directives from %s", f)
+                        return content
+                except Exception:
+                    pass
+        parent = cwd.parent
+        if parent == cwd:
+            break
+        cwd = parent
+
+    # Fallback: home directory global directives
+    home = Path.home()
+    for name in [".mulagent.md"]:
+        f = home / name
+        if f.is_file():
+            try:
+                content = f.read_text(errors="replace").strip()
+                if content:
+                    logger.info("Loaded global directives from %s", f)
+                    return content
+            except Exception:
+                pass
+
+    return ""
+
+
+def _get_git_context() -> str:
+    """Auto-detect git repo context for the system prompt.
+
+    Returns a brief summary: branch, status, recent commit.
+    Non-blocking: returns empty string if not in a git repo or git fails.
+    """
+    import subprocess
+    try:
+        # Check if we're in a git repo
+        subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, timeout=3, check=True,
+        )
+
+        parts = []
+
+        # Current branch
+        branch = subprocess.run(
+            ["git", "branch", "--show-current"],
+            capture_output=True, timeout=3, text=True,
+        )
+        if branch.returncode == 0 and branch.stdout.strip():
+            parts.append(f"branch: {branch.stdout.strip()}")
+
+        # Status summary (modified/untracked counts)
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, timeout=5, text=True,
+        )
+        if status.returncode == 0:
+            lines = [l for l in status.stdout.strip().split("\n") if l]
+            if lines:
+                modified = sum(1 for l in lines if l.startswith(" M") or l.startswith("M "))
+                added = sum(1 for l in lines if l.startswith("A ") or l.startswith("??"))
+                status_parts = []
+                if modified:
+                    status_parts.append(f"{modified} modified")
+                if added:
+                    status_parts.append(f"{added} untracked/added")
+                if status_parts:
+                    parts.append(f"status: {', '.join(status_parts)}")
+            else:
+                parts.append("status: clean")
+
+        # Last commit (short)
+        log = subprocess.run(
+            ["git", "log", "-1", "--format=%h %s (%ar)"],
+            capture_output=True, timeout=3, text=True,
+        )
+        if log.returncode == 0 and log.stdout.strip():
+            parts.append(f"last commit: {log.stdout.strip()}")
+
+        return " | ".join(parts) if parts else ""
+
+    except Exception:
+        return ""
+
+
+# Cache project directives and git context (loaded once per process)
+_cached_project_directives: str | None = None
+_cached_git_context: str | None = None
+
+
 def _build_system_prompt(
     tool_descriptions: str,
     memory: WorkingMemory,
     conversation_history: str = "",
 ) -> str:
-    """Build system prompt with memory context and conversation history.
+    """Build system prompt with memory context, conversation history,
+    project directives (.mulagent.md), and git context.
 
     Memory context and history go into the system prompt (not as mid-conversation
     HumanMessages) to avoid breaking the AI→ToolMessage pairing.
     """
+    global _cached_project_directives, _cached_git_context
     from datetime import date
+
+    # Load project directives (once)
+    if _cached_project_directives is None:
+        _cached_project_directives = _load_project_directives()
+
+    # Load git context (once per process)
+    if _cached_git_context is None:
+        _cached_git_context = _get_git_context()
+
     base = ORCHESTRATOR_PROMPT.format(
         tool_descriptions=tool_descriptions,
         current_date=date.today().isoformat(),
     )
     parts = [base]
+
+    # Project-level directives (.mulagent.md)
+    if _cached_project_directives:
+        parts.append(f"## Project Directives\n{_cached_project_directives}")
+
+    # Git context
+    if _cached_git_context:
+        parts.append(f"## Git Context\n{_cached_git_context}")
 
     if conversation_history:
         parts.append(f"## Conversation History\n{conversation_history}")
@@ -441,7 +566,13 @@ async def react_loop(
     # Strategy tracking: record what has been tried and outcomes
     strategies_tried: list[dict] = []  # [{tool, args_summary, outcome, round}]
     tool_fail_counts: dict[str, int] = {}  # tool_name → consecutive failure count
-    disabled_tools: set[str] = set()  # tools disabled after repeated failures
+    disabled_tools: dict[str, float] = {}  # tool_name → disabled_at timestamp (auto-recovery after TTL)
+    _DISABLED_TTL = 300  # seconds before a disabled tool is auto-recovered
+
+    # Read-before-edit tracking: files that have been read in this session
+    _files_read: set[str] = set()  # paths read via read_file
+    # Parallel call tracking: consecutive rounds with single tool call
+    _single_call_rounds = 0
 
     # Cache: bind_tools once since schemas don't change across rounds
     llm_with_tools = llm.bind_tools(tool_schemas)
@@ -473,11 +604,12 @@ async def react_loop(
                 except Exception:
                     pass
 
-            # ── Think + Act ──
+            # ── Think + Act (exponential backoff for rate limits) ──
             start = time.perf_counter()
             try:
                 response = await retry_async(
-                    llm_with_tools.ainvoke, messages, max_retries=1,
+                    llm_with_tools.ainvoke, messages,
+                    max_retries=3, base_delay=2.0, max_delay=30.0,
                 )
             except Exception as e:
                 logger.error("LLM call failed at round %d: %s", round_num + 1, e)
@@ -515,6 +647,23 @@ async def react_loop(
                     return await _force_conclude_llm(memory, user_input, llm)
                 continue
 
+            # ── Parallel call detection: nudge LLM if repeatedly making single calls ──
+            if len(tool_calls) == 1:
+                _single_call_rounds += 1
+            else:
+                _single_call_rounds = 0
+
+            if _single_call_rounds >= 3 and round_num >= 3:
+                logger.info("Parallel nudge: %d consecutive single-call rounds", _single_call_rounds)
+                # Inject hint as part of the response content
+                _parallel_hint = (
+                    "\n\n💡 [System] You've made {n} consecutive rounds with a single tool call. "
+                    "If your next steps are independent, combine them in ONE round for efficiency."
+                ).format(n=_single_call_rounds)
+                if hasattr(response, 'content') and response.content:
+                    response.content += _parallel_hint
+                _single_call_rounds = 0  # reset after nudge
+
             # Add AI message to conversation (this MUST come before ToolMessages)
             conversation.append(response)
 
@@ -546,6 +695,14 @@ async def react_loop(
                     sig.split(":")[0] for sig in recent_calls[-3:]
                 ]
                 is_similar_repeat = len(set(recent_tool_names)) == 1
+
+            # ── Auto-recover disabled tools after TTL ──
+            _now = time.perf_counter()
+            _recovered = [t for t, ts in disabled_tools.items() if _now - ts > _DISABLED_TTL]
+            for t in _recovered:
+                del disabled_tools[t]
+                tool_fail_counts.pop(t, None)
+                logger.info("Tool %s auto-recovered after %ds TTL", t, _DISABLED_TTL)
 
             # Check if calling a disabled tool
             calling_disabled = any(tc["name"] in disabled_tools for tc in tool_calls)
@@ -585,6 +742,24 @@ async def react_loop(
                 t_def = tool_defs.get(t_name)
                 if t_def is None:
                     return tc, f"Error: unknown tool '{t_name}'"
+
+                # ── Read-before-edit enforcement ──
+                if t_name in ("edit_file", "write_file") and not is_sub_agent:
+                    _target = t_args.get("path", "")
+                    if _target and _target not in _files_read:
+                        # For write_file creating new files, skip the check
+                        from pathlib import Path as _P
+                        if t_name == "edit_file" or _P(_target).expanduser().exists():
+                            return tc, (
+                                f"Error: you must read_file('{_target}') before {t_name}. "
+                                "This prevents editing based on stale or assumed content."
+                            )
+
+                # ── Track read_file calls for read-before-edit ──
+                if t_name == "read_file":
+                    _read_path = t_args.get("path", "")
+                    if _read_path:
+                        _files_read.add(_read_path)
 
                 # Check cache (skip for stateful tools like execute_shell, code_run, write_file)
                 cacheable = t_name not in ("execute_shell", "code_run", "write_file", "delegate")
@@ -746,7 +921,7 @@ async def react_loop(
                     tool_fail_counts[tool_name] = tool_fail_counts.get(tool_name, 0) + 1
                     disable_threshold = 5 if error_kind == ToolErrorKind.RETRYABLE else 3
                     if tool_fail_counts[tool_name] >= disable_threshold:
-                        disabled_tools.add(tool_name)
+                        disabled_tools[tool_name] = time.perf_counter()
                         logger.warning("Tool %s disabled after %d consecutive %s failures",
                                       tool_name, tool_fail_counts[tool_name], error_kind)
                         compressed += (
@@ -831,7 +1006,7 @@ async def react_loop(
             result_meta["facts_count"] = len(memory.facts)
             result_meta["tools_used"] = list({f.source for f in memory.facts})
             result_meta["strategies_tried"] = strategies_tried
-            result_meta["disabled_tools"] = list(disabled_tools)
+            result_meta["disabled_tools"] = list(disabled_tools.keys())
             result_meta["_tasks"] = memory.state.get("_tasks", [])
 
     # Run with overall timeout

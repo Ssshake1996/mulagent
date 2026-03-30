@@ -635,12 +635,47 @@ metadata:
 | 专用工具替代 shell 搜索/读取 | glob/grep/read_file 更安全高效，减少 Shell 注入风险 |
 | 搜索驱动代码理解（对标 Claude Code） | codemap 全扫描不 scale，Glob+Grep+Read 定位→精确→阅读→追踪 更高效 |
 | 压缩参数可配置化（13 项） | 不同模型上下文窗口差异大，硬编码无法适配 Qwen 1M vs GPT-4 128K |
+| 读后才能改（read-before-edit） | 防止 LLM 凭记忆修改文件导致内容错误，对标 Claude Code 的强制前置 Read |
+| 禁用工具 TTL 自动恢复 | 临时网络错误不应永久禁用工具，300s 后自动重新启用 |
+| 项目级指令文件（.mulagent.md） | 对标 Claude Code 的 CLAUDE.md，支持项目/全局两级规则注入 |
+| 自动 git 上下文注入 | 减少首轮冗余 git_ops 调用，LLM 直接获得 branch/status/commit 信息 |
 
 ---
 
 ## 12. 变更日志
 
-### v0.15.0 — Claude Code 对标优化（当前）
+### v0.16.0 — 可靠性与智能化增强（当前）
+
+对标 Claude Code 核心机制，7 项架构改进：
+
+- **edit_file diff + 唯一性校验**：
+  - 多处匹配时返回错误并显示各匹配位置（行号），而非静默替换
+  - 编辑成功后返回 unified diff 输出，用户可清晰看到变更内容
+  - mtime 冲突检测：文件被外部修改后拒绝编辑，要求重新 read
+- **读后才能改的硬约束**（read-before-edit enforcement）：
+  - edit_file/write_file 执行前检查该文件是否已通过 read_file 读取过
+  - 未读取则返回错误："you must read_file before edit_file"
+  - 防止 LLM 凭记忆或假设修改文件导致内容错误
+  - 新建文件（write_file + 文件不存在）跳过此检查
+- **并行调用检测 + nudge**：
+  - 连续 3 轮仅发出 1 个工具调用时，自动注入提示：
+    "combine independent calls in ONE round for efficiency"
+  - 减少不必要的串行轮次，提升任务执行效率
+- **LLM 指数退避重试**：
+  - 从 `max_retries=1` 升级为 `max_retries=3, base_delay=2s, max_delay=30s`
+  - 429/503/timeout 等可重试错误自动指数退避（2s → 4s → 8s）
+- **禁用工具自动恢复**（TTL 300s）：
+  - 工具连续失败被禁用后，300 秒后自动恢复（重置失败计数）
+  - 防止临时网络问题导致工具永久不可用
+- **项目级指令文件**（.mulagent.md）：
+  - 启动时自动搜索 `.mulagent.md` 或 `AGENT.md`（CWD → 向上 5 级 → ~/）
+  - 内容作为 `## Project Directives` 注入 system prompt
+  - 支持层级继承：全局 `~/.mulagent.md` + 项目 `./AGENT.md`
+- **自动 git 上下文注入**：
+  - 启动时自动检测 git repo，注入 branch、status、last commit 到 system prompt
+  - 减少 LLM 在首轮调用 git_ops 获取基本信息的浪费
+
+### v0.15.0 — Claude Code 对标优化
 
 对标 Claude Code，从 prompt、tools、架构三个维度补齐 11 项差距：
 
