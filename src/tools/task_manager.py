@@ -48,16 +48,29 @@ async def _todo_manage(params: dict[str, Any], **deps: Any) -> str:
         items = params.get("items", [])
         if not items:
             return "Error: items is required (list of task descriptions)"
-        for item in items:
+
+        # If tasks already exist, keep completed ones and replace pending/in_progress
+        # This prevents duplicate task lists when LLM re-plans after loop detection
+        done_tasks = [t for t in tasks if t.get("status") == "done"]
+        if done_tasks:
+            # Preserve completed tasks, start new IDs after the highest existing ID
+            max_id = max(t["id"] for t in done_tasks)
+        else:
+            max_id = 0
+
+        new_tasks = list(done_tasks)  # keep completed tasks
+        for i, item in enumerate(items, start=max_id + 1):
             task = {
-                "id": len(tasks) + 1,
+                "id": i,
                 "text": item if isinstance(item, str) else str(item),
                 "status": "pending",
                 "created_at": time.time(),
             }
-            tasks.append(task)
+            new_tasks.append(task)
+        tasks = new_tasks
         _set_tasks(deps, tasks)
-        return f"Created {len(items)} tasks. Total: {len(tasks)}\n" + _format_tasks(tasks)
+        replaced = " (replaced pending tasks)" if done_tasks else ""
+        return f"Created {len(items)} tasks{replaced}. Total: {len(tasks)}\n" + _format_tasks(tasks)
 
     elif action == "done":
         task_id = params.get("task_id")
