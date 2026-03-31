@@ -582,6 +582,7 @@ async def react_loop(
     _tool_cache: dict[str, str] = {}  # hash(tool_name + args) → result
 
     async def _run_loop() -> str:
+        nonlocal _single_call_rounds
         for round_num in range(max_rounds):
             # Rebuild messages: system (with context + history) + user + conversation
             system_prompt = _build_system_prompt(
