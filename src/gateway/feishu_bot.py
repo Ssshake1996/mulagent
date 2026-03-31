@@ -1131,8 +1131,8 @@ async def _process_task(
         status = result.get("status", "unknown")
         elapsed = time.monotonic() - tracker.start
 
-        # Build final message: actions summary + result
-        action_lines = tracker.actions[-6:] if tracker.actions else []
+        # Build final message: full actions log + result
+        action_lines = tracker.actions if tracker.actions else []
         header = "\n".join(action_lines) if action_lines else "✅ 直接回答"
         timing_total = f"⏱ 总耗时 {elapsed:.1f}s"
 
