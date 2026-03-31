@@ -842,20 +842,32 @@ def _on_message(data) -> None:
 
     user_id = _extract_user_id(data)
     chat_id = _extract_chat_id(data)
-    cmd = text.strip().lower()
+
+    # ── Command parsing: extract first line as command, rest as follow-up ──
+    _raw_lines = text.strip().split("\n", 1)
+    _first_line = _raw_lines[0].strip()
+    _rest_text = _raw_lines[1].strip() if len(_raw_lines) > 1 else ""
+    cmd = _first_line.lower()
 
     # Handle /help command
     if cmd in ("/help", "/h"):
         _reply_card(message_id, _HELP_TEXT)
         return
 
-    # Handle /new command — create new session and reply confirmation
+    # Handle /new command — create new session, then optionally execute follow-up
     if cmd in ("/new", "/new session"):
         if _session_mgr:
             session_id = _session_mgr.new_session(user_id, chat_id)
-            _reply_card(message_id, f"✅ 新会话已创建\n\nSession: `{session_id}`")
             logger.info("New session for user %s (chat %s): %s", user_id, chat_id[-8:], session_id)
-        return
+            if _rest_text:
+                # /new + follow-up text → create session then execute the request
+                _reply_card(message_id, f"✅ 新会话已创建，正在执行...\n\nSession: `{session_id}`")
+                text = _rest_text  # fall through to task execution below
+            else:
+                _reply_card(message_id, f"✅ 新会话已创建\n\nSession: `{session_id}`")
+                return
+        else:
+            return
 
     # Handle /model command — list or switch models
     if cmd == "/model":
