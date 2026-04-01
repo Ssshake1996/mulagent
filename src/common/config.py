@@ -227,7 +227,7 @@ class CompressSettings(BaseSettings):
     tool_result_max_tokens: int = 1500     # 单个工具结果截断上限 (token)
 
     # ── 上下文压缩阈值 ──
-    context_compress_ratio: float = 0.15   # 上下文压缩阈值 = context_window * ratio
+    context_compress_ratio: float = 0.15   # 上下文压缩 token 预算 = context_window * ratio (范围 0.01~0.5)
     context_max_chars: int = 0             # 显式覆盖 (>0 时优先于 ratio，向后兼容)
 
     # ── 四级压缩阈值 (相关性分数) ──

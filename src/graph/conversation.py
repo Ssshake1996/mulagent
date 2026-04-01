@@ -285,6 +285,7 @@ class ConversationStore:
         session_id: str,
         current_query: str = "",
         max_turns: int = 10,
+        max_tokens: int = 0,
         max_chars: int = 0,
     ) -> str:
         """Build a conversation history string for the system prompt.
@@ -298,7 +299,8 @@ class ConversationStore:
             session_id: The conversation session ID.
             current_query: Current user query for relevance scoring.
             max_turns: Max recent turns (fallback if compressor unavailable).
-            max_chars: Character budget. 0 = auto (max_tokens * 0.5 * 4).
+            max_tokens: Token budget. 0 = auto (context_window * compress_ratio).
+            max_chars: Deprecated. Converted to tokens if provided (÷2, conservative).
 
         Returns:
             Assembled context string optimized for LLM consumption.
@@ -307,16 +309,16 @@ class ConversationStore:
         if conv is None or not conv.get("turns"):
             return ""
 
-        # Auto-compute max_chars from config: max_tokens * 0.5 (token budget) * 4 (chars/token)
-        if max_chars <= 0:
-            max_chars = self._auto_max_chars()
+        # Backward compat: convert max_chars to tokens
+        if max_tokens <= 0 and max_chars > 0:
+            max_tokens = int(max_chars * 0.5)
 
         turns = conv["turns"]
         summary = conv.get("summary", "")
         archived_topics = conv.get("archive", {}).get("topics", [])
 
         from graph.context_compressor import ContextAssembler
-        assembler = ContextAssembler(max_chars=max_chars)
+        assembler = ContextAssembler(max_tokens=max_tokens)
 
         return assembler.assemble(
             turns=turns,
@@ -326,19 +328,6 @@ class ConversationStore:
         )
 
     @staticmethod
-    def _auto_max_chars(default: int = 8000) -> int:
-        """Compute max_chars from config: max_tokens * 0.5 * 4."""
-        try:
-            from common.config import get_settings
-            settings = get_settings()
-            model_cfg = settings.llm.get_model()
-            if model_cfg and model_cfg.max_tokens:
-                # 50% of max_tokens for context, ~4 chars per token
-                return int(model_cfg.max_tokens * 0.5 * 4)
-        except Exception:
-            pass
-        return default
-
     def smart_compress(self, session_id: str) -> str:
         """Force smart compression: archive old topics and return summary."""
         conv = self.load(session_id)

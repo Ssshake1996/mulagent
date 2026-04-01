@@ -449,48 +449,51 @@ class ContextAssembler:
     3. Compress by relevance to current query
     """
 
-    def __init__(self, max_chars: int = 0):
+    def __init__(self, max_tokens: int = 0):
         """
         Args:
-            max_chars: Approximate character budget for the assembled context.
-                       0 = auto-compute from context_window * context_compress_ratio.
-                       Fallback: explicit context_max_chars config → default 8000.
-                       ~4 chars per token, so 8000 chars ≈ 2000 tokens.
+            max_tokens: Token budget for the assembled context.
+                        0 = auto-compute from context_window * context_compress_ratio.
+                        Fallback: explicit context_max_chars / 2 → default 2000 tokens.
         """
         self.classifier = TurnClassifier()
         self.grouper = TopicGrouper()
         self.compressor = SmartCompressor()
-        if max_chars <= 0:
-            max_chars = self._compute_max_chars()
-        self.max_chars = max_chars
+        if max_tokens <= 0:
+            max_tokens = self._compute_budget_tokens()
+        self.max_tokens = max_tokens
 
     @staticmethod
-    def _compute_max_chars() -> int:
-        """Compute context budget from model context_window * compress ratio.
+    def _compute_budget_tokens() -> int:
+        """Compute context budget in tokens from model context_window.
 
         Priority:
-        1. Explicit context_max_chars > 0 in config (backward compat)
-        2. context_window * context_compress_ratio (dynamic)
-        3. Fallback: 8000 chars
+        1. Explicit context_max_chars > 0 in config → convert to tokens (÷2, conservative)
+        2. context_window * context_compress_ratio (direct token budget)
+        3. Fallback: 2000 tokens
+
+        Ratio is clamped to [0.01, 0.5] to prevent misconfiguration.
         """
         try:
             from common.config import get_settings
             settings = get_settings()
             cfg = settings.react.compress
 
-            # If explicit char budget is set, use it (backward compatibility)
+            # Backward compat: explicit char budget → convert to tokens conservatively
             if cfg.context_max_chars > 0:
-                return cfg.context_max_chars
+                # Chinese ~1.5 tokens/char, English ~0.25 tokens/char
+                # Use 0.5 as safe middle ground (overestimates → won't overflow)
+                return max(500, int(cfg.context_max_chars * 0.5))
 
-            # Dynamic: context_window * ratio, convert tokens → chars (~4 chars/token)
+            # Dynamic: context_window * ratio (direct token budget)
             model_cfg = settings.llm.get_model()
             if model_cfg:
                 ctx_window = model_cfg.get_context_window()
-                ratio = cfg.context_compress_ratio
-                return int(ctx_window * ratio * 4)  # tokens → chars
+                ratio = max(0.01, min(0.5, cfg.context_compress_ratio))  # clamp
+                return max(500, int(ctx_window * ratio))
         except Exception:
             pass
-        return 8000
+        return 2000
 
     def classify_turns(self, turns: list[dict]) -> list[dict]:
         """Add sem_type to each turn in-place and return them."""
@@ -522,8 +525,10 @@ class ContextAssembler:
             summary: Legacy summary string (used as fallback).
 
         Returns:
-            Assembled context string within max_chars budget.
+            Assembled context string within token budget.
         """
+        from common.tokenizer import estimate_tokens
+
         # Step 1: Classify turns
         turns = self.classify_turns(turns)
 
@@ -565,23 +570,24 @@ class ContextAssembler:
         rest = scored[:-1] if last_hot else scored
         rest.sort(key=lambda x: -x[2])
 
-        # Step 5: Assemble within budget
+        # Step 5: Assemble within token budget
         parts: list[str] = []
-        char_budget = self.max_chars
+        token_budget = self.max_tokens
         reserve_for_last = 0
 
         # Reserve space for the last (most recent) topic
         if last_hot:
             last_text = self.compressor.compress(last_hot[0], last_hot[3])
-            reserve_for_last = len(last_text) + 50
-            char_budget -= reserve_for_last
+            reserve_for_last = estimate_tokens(last_text) + 20
+            token_budget -= reserve_for_last
 
         # Add legacy summary if present
         if summary:
             summary_text = f"[Earlier summary: {summary[:300]}]"
-            if len(summary_text) < char_budget:
+            summary_cost = estimate_tokens(summary_text)
+            if summary_cost < token_budget:
                 parts.append(summary_text)
-                char_budget -= len(summary_text)
+                token_budget -= summary_cost
 
         # Add topics by relevance (degrade if over budget)
         for topic, source, score, level in rest:
@@ -589,19 +595,22 @@ class ContextAssembler:
             if not text:
                 continue
 
-            if len(text) <= char_budget:
+            text_cost = estimate_tokens(text)
+            if text_cost <= token_budget:
                 parts.append(text)
-                char_budget -= len(text)
+                token_budget -= text_cost
             else:
                 # Degrade compression level
                 for degraded in (LEVEL_SUMMARY, LEVEL_TITLE):
                     if degraded == level:
                         continue
                     degraded_text = self.compressor.compress(topic, degraded)
-                    if degraded_text and len(degraded_text) <= char_budget:
-                        parts.append(degraded_text)
-                        char_budget -= len(degraded_text)
-                        break
+                    if degraded_text:
+                        degraded_cost = estimate_tokens(degraded_text)
+                        if degraded_cost <= token_budget:
+                            parts.append(degraded_text)
+                            token_budget -= degraded_cost
+                            break
 
         # Add the most recent topic last
         if last_hot:
