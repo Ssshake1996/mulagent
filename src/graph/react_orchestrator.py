@@ -462,15 +462,16 @@ def _build_system_prompt(
 ) -> str:
     """Build system prompt with dynamic context layers.
 
-    Layers (each with proportional token budget based on model context_window):
+    Budget base = context_window - max_tokens (available input space).
+    Layers (each with proportional budget of input space):
     1. Base prompt (no limit) — core instructions + tool descriptions
-    2. Project directives (.mulagent.md) — 2% of context_window
+    2. Project directives (.mulagent.md) — 2.5%
     3. Git context (TTL 60s) — 0.5%
-    4. Persistent memory (cross-session) — 1.5%
-    5. Conversation history — 7%
-    6. Working memory (facts + directives) — 4%
+    4. Persistent memory (cross-session) — 2%
+    5. Conversation history — 9%
+    6. Working memory (facts + directives) — 6%
     7. System reminders (dynamic mid-loop injection) — appended as-is
-    Total dynamic ≈ 15%, leaving ~85% for base prompt + tool schemas + reasoning.
+    Total dynamic ≈ 20% of input budget.
     Context window auto-detected from model name or explicit config.
     """
     global _cached_project_directives
@@ -495,25 +496,30 @@ def _build_system_prompt(
     )
     parts = [base]
 
-    # ── Dynamic segments with token budgets (proportional to model context window) ──
-    _ctx_window = 32_768  # conservative fallback
+    # ── Dynamic segments with token budgets ──
+    # Budget base = context_window - max_tokens (available input space)
+    # This ensures output capacity is never squeezed by input bloat.
+    _ctx_window = 32_768
+    _max_output = 4096
     try:
         from common.config import get_settings
         _model_cfg = get_settings().llm.get_model()
         if _model_cfg:
             _ctx_window = _model_cfg.get_context_window()
+            _max_output = _model_cfg.max_tokens
     except Exception:
         pass
+    _input_budget = _ctx_window - _max_output  # available for all input
 
-    # Ratio-based budgets (percentages of context window)
-    # Total dynamic ≈ 15% of context window — leaves room for base prompt,
-    # tool schemas, multi-turn conversation, and LLM reasoning.
+    # Ratio-based budgets (percentages of available input space)
+    # Total dynamic ≈ 20% of input budget — rest for base prompt,
+    # tool schemas, multi-turn tool results, and in-context examples.
     _PROMPT_BUDGETS = {
-        "project_directives":   max(200, int(_ctx_window * 0.02)),    # 2%
-        "git_context":          max(100, int(_ctx_window * 0.005)),   # 0.5%
-        "persistent_memory":    max(150, int(_ctx_window * 0.015)),   # 1.5%
-        "conversation_history": max(500, int(_ctx_window * 0.07)),    # 7%
-        "working_memory":       max(400, int(_ctx_window * 0.04)),    # 4%
+        "project_directives":   max(200, int(_input_budget * 0.025)),   # 2.5%
+        "git_context":          max(100, int(_input_budget * 0.005)),   # 0.5%
+        "persistent_memory":    max(150, int(_input_budget * 0.02)),    # 2%
+        "conversation_history": max(500, int(_input_budget * 0.09)),    # 9%
+        "working_memory":       max(400, int(_input_budget * 0.06)),    # 6%
     }
 
     def _budget_append(label: str, header: str, content: str) -> None:

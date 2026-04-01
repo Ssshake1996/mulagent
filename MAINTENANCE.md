@@ -647,7 +647,7 @@ metadata:
 | 工具延迟加载（Deferred Tools） | 22 个工具全量注入浪费 token，扩展工具按需加载 schema 节省 ~800 tokens/轮 |
 | System Reminder 动态注入 | 对标 Claude Code 的 system-reminder，支持循环中间插入上下文提醒 |
 | 持久化跨会话记忆（PersistentMemory） | 对标 Claude Code 的 MEMORY.md，跨会话保持用户偏好和项目上下文 |
-| Prompt 分层预算控制（按 context window） | 根据模型 context window（自动检测/显式配置）按比例分配，适配 8K~2M 各种模型 |
+| Prompt 分层预算控制（按可用输入空间） | 基于 context_window - max_tokens 按比例分配，确保输出空间不被输入挤占 |
 | 动态环境上下文（每轮刷新） | 替代静态 current_date，提供实时时间、工作目录、平台信息 |
 
 ---
@@ -680,8 +680,9 @@ metadata:
   - `ModelConfig` 新增 `context_window` 配置项（0=自动检测）
   - 内置 50+ 常见模型 context window 查找表（GPT/Claude/Qwen/DeepSeek/Gemini/GLM/Moonshot/Doubao）
   - 优先级：显式配置 → 模型名前缀匹配 → 保守默认值 32K
-  - 按 context window 比例分配：directives(2%), git(0.5%), memory(1.5%), history(7%), facts(4%)
-  - 总动态预算 ≈ 15%，留 ~85% 给 base prompt + tool schemas + 推理
+  - 预算基于**可用输入空间**（context_window - max_tokens），而非 context_window 本身
+  - 按输入空间比例分配：directives(2.5%), git(0.5%), memory(2%), history(9%), facts(6%)
+  - 总动态预算 ≈ 20% 输入空间，其余留给 base prompt + tool schemas + 工具结果
   - 每段有最低保底值（如 conversation_history 至少 500 tokens）
 - **动态环境上下文**：
   - 替换静态 `{current_date}` 为 `{environment_context}`
