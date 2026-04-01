@@ -453,16 +453,44 @@ class ContextAssembler:
         """
         Args:
             max_chars: Approximate character budget for the assembled context.
-                       0 = read from config (react.compress.context_max_chars, default 8000).
+                       0 = auto-compute from context_window * context_compress_ratio.
+                       Fallback: explicit context_max_chars config → default 8000.
                        ~4 chars per token, so 8000 chars ≈ 2000 tokens.
         """
         self.classifier = TurnClassifier()
         self.grouper = TopicGrouper()
         self.compressor = SmartCompressor()
         if max_chars <= 0:
-            cfg = _get_compress_cfg()
-            max_chars = cfg.context_max_chars if cfg else 8000
+            max_chars = self._compute_max_chars()
         self.max_chars = max_chars
+
+    @staticmethod
+    def _compute_max_chars() -> int:
+        """Compute context budget from model context_window * compress ratio.
+
+        Priority:
+        1. Explicit context_max_chars > 0 in config (backward compat)
+        2. context_window * context_compress_ratio (dynamic)
+        3. Fallback: 8000 chars
+        """
+        try:
+            from common.config import get_settings
+            settings = get_settings()
+            cfg = settings.react.compress
+
+            # If explicit char budget is set, use it (backward compatibility)
+            if cfg.context_max_chars > 0:
+                return cfg.context_max_chars
+
+            # Dynamic: context_window * ratio, convert tokens → chars (~4 chars/token)
+            model_cfg = settings.llm.get_model()
+            if model_cfg:
+                ctx_window = model_cfg.get_context_window()
+                ratio = cfg.context_compress_ratio
+                return int(ctx_window * ratio * 4)  # tokens → chars
+        except Exception:
+            pass
+        return 8000
 
     def classify_turns(self, turns: list[dict]) -> list[dict]:
         """Add sem_type to each turn in-place and return them."""

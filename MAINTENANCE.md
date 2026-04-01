@@ -516,7 +516,8 @@ react:
     facts_compact_trigger: 15           # facts 超过此数触发压缩
     facts_keep_recent: 5               # 压缩时保留最近 N 条
     tool_result_max_tokens: 1500       # 单个工具结果截断上限 (token)
-    context_max_chars: 0               # 上下文字符预算 (0=自动: max_tokens×0.5×4)
+    context_compress_ratio: 0.15       # 上下文压缩阈值 = context_window × ratio（动态）
+    context_max_chars: 0               # 显式覆盖 (>0 时优先于 ratio，向后兼容)
     level_full: 0.7                    # ≥此值 → 完整保留
     level_summary: 0.3                 # ≥此值 → 摘要
     level_title: 0.1                   # ≥此值 → 仅标题；低于此值 → 隐藏
@@ -756,7 +757,8 @@ metadata:
 - **13 项压缩参数可配置化**（`react.compress`）：
   - Facts 压缩：`facts_compact_trigger`, `facts_keep_recent`
   - 工具结果截断：`tool_result_max_tokens`
-  - 上下文预算：`context_max_chars`（0=自动：max_tokens×0.5×4）
+  - 上下文压缩阈值：`context_compress_ratio`（context_window × ratio 动态计算）
+  - 向后兼容：`context_max_chars` > 0 时仍优先使用显式值
   - 四级压缩阈值：`level_full`, `level_summary`, `level_title`
   - 三信号权重：`weight_keyword`, `weight_recall`, `weight_decay`
   - 话题归档：`archive_threshold`, `archive_manual_threshold`, `decay_half_life_hours`

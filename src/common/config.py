@@ -226,8 +226,9 @@ class CompressSettings(BaseSettings):
     facts_keep_recent: int = 5             # 压缩时保留最近 N 条
     tool_result_max_tokens: int = 1500     # 单个工具结果截断上限 (token)
 
-    # ── 上下文预算 ──
-    context_max_chars: int = 8000          # 上下文字符预算 (0=自动: max_tokens*0.5*4)
+    # ── 上下文压缩阈值 ──
+    context_compress_ratio: float = 0.15   # 上下文压缩阈值 = context_window * ratio
+    context_max_chars: int = 0             # 显式覆盖 (>0 时优先于 ratio，向后兼容)
 
     # ── 四级压缩阈值 (相关性分数) ──
     level_full: float = 0.7                # ≥0.7 → 完整保留
