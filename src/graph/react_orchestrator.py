@@ -462,15 +462,16 @@ def _build_system_prompt(
 ) -> str:
     """Build system prompt with dynamic context layers.
 
-    Layers (each with proportional token budget based on model max_tokens):
+    Layers (each with proportional token budget based on model context_window):
     1. Base prompt (no limit) — core instructions + tool descriptions
-    2. Project directives (.mulagent.md) — 4% of max_tokens
-    3. Git context (TTL 60s) — 1.5%
-    4. Persistent memory (cross-session) — 2.5%
-    5. Conversation history — 12%
-    6. Working memory (facts + directives) — 8%
+    2. Project directives (.mulagent.md) — 2% of context_window
+    3. Git context (TTL 60s) — 0.5%
+    4. Persistent memory (cross-session) — 1.5%
+    5. Conversation history — 7%
+    6. Working memory (facts + directives) — 4%
     7. System reminders (dynamic mid-loop injection) — appended as-is
-    Total dynamic ≈ 28%, leaving ~72% for base prompt + reasoning.
+    Total dynamic ≈ 15%, leaving ~85% for base prompt + tool schemas + reasoning.
+    Context window auto-detected from model name or explicit config.
     """
     global _cached_project_directives
     from common.tokenizer import estimate_tokens, truncate_to_tokens
@@ -494,28 +495,26 @@ def _build_system_prompt(
     )
     parts = [base]
 
-    # ── Dynamic segments with token budgets (proportional to model context) ──
-    # Budget = model_max_tokens * ratio. Total dynamic budget ~25% of context.
-    # This leaves ~75% for base prompt + tool schemas + LLM reasoning.
-    _model_max_tokens = 4096  # fallback default
+    # ── Dynamic segments with token budgets (proportional to model context window) ──
+    _ctx_window = 32_768  # conservative fallback
     try:
         from common.config import get_settings
-        _cfg = get_settings()
-        _model_cfg = _cfg.llm.get_model()
-        if _model_cfg and _model_cfg.max_tokens:
-            _model_max_tokens = _model_cfg.max_tokens
+        _model_cfg = get_settings().llm.get_model()
+        if _model_cfg:
+            _ctx_window = _model_cfg.get_context_window()
     except Exception:
         pass
 
-    # Ratio-based budgets (percentages of model max_tokens)
+    # Ratio-based budgets (percentages of context window)
+    # Total dynamic ≈ 15% of context window — leaves room for base prompt,
+    # tool schemas, multi-turn conversation, and LLM reasoning.
     _PROMPT_BUDGETS = {
-        "project_directives": max(200, int(_model_max_tokens * 0.04)),   # 4%
-        "git_context":        max(100, int(_model_max_tokens * 0.015)),  # 1.5%
-        "persistent_memory":  max(150, int(_model_max_tokens * 0.025)),  # 2.5%
-        "conversation_history": max(500, int(_model_max_tokens * 0.12)), # 12%
-        "working_memory":     max(400, int(_model_max_tokens * 0.08)),   # 8%
+        "project_directives":   max(200, int(_ctx_window * 0.02)),    # 2%
+        "git_context":          max(100, int(_ctx_window * 0.005)),   # 0.5%
+        "persistent_memory":    max(150, int(_ctx_window * 0.015)),   # 1.5%
+        "conversation_history": max(500, int(_ctx_window * 0.07)),    # 7%
+        "working_memory":       max(400, int(_ctx_window * 0.04)),    # 4%
     }
-    # Total dynamic ≈ 28% of context, rest for base prompt + reasoning
 
     def _budget_append(label: str, header: str, content: str) -> None:
         if not content:

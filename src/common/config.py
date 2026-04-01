@@ -81,6 +81,84 @@ class QdrantSettings(BaseSettings):
     collection_name: str = "case_library"
 
 
+# Known context window sizes for popular models (tokens).
+# Used as fallback when context_window is not explicitly configured.
+# Prefix-matched: "gpt-4o" matches "gpt-4o-2024-08-06", "gpt-4o-mini", etc.
+KNOWN_CONTEXT_WINDOWS: dict[str, int] = {
+    # OpenAI
+    "gpt-4o": 128_000,
+    "gpt-4-turbo": 128_000,
+    "gpt-4-1": 1_048_576,
+    "gpt-4.1": 1_048_576,
+    "o1": 200_000,
+    "o3": 200_000,
+    "o4-mini": 200_000,
+    "gpt-4": 8_192,
+    "gpt-3.5-turbo": 16_385,
+    # Anthropic
+    "claude-3-5-sonnet": 200_000,
+    "claude-3-5-haiku": 200_000,
+    "claude-3-opus": 200_000,
+    "claude-3-sonnet": 200_000,
+    "claude-3-haiku": 200_000,
+    "claude-sonnet-4": 200_000,
+    "claude-opus-4": 200_000,
+    "claude-haiku-4": 200_000,
+    # Qwen (通义千问)
+    "qwen-max": 32_768,
+    "qwen-plus": 131_072,
+    "qwen-turbo": 131_072,
+    "qwen-long": 1_000_000,
+    "qwen3-235b": 131_072,
+    "qwen2.5": 131_072,
+    "qwen2": 131_072,
+    # DeepSeek
+    "deepseek-chat": 64_000,
+    "deepseek-coder": 64_000,
+    "deepseek-reasoner": 64_000,
+    "deepseek-v3": 64_000,
+    "deepseek-r1": 64_000,
+    # Google
+    "gemini-2.5-pro": 1_048_576,
+    "gemini-2.5-flash": 1_048_576,
+    "gemini-2.0-flash": 1_048_576,
+    "gemini-1.5-pro": 2_097_152,
+    "gemini-1.5-flash": 1_048_576,
+    # GLM (智谱)
+    "glm-4": 128_000,
+    "glm-4-plus": 128_000,
+    "glm-3-turbo": 128_000,
+    # Moonshot (月之暗面)
+    "moonshot-v1-128k": 128_000,
+    "moonshot-v1-32k": 32_768,
+    "moonshot-v1-8k": 8_192,
+    # Doubao (豆包)
+    "doubao-pro-256k": 256_000,
+    "doubao-pro-128k": 128_000,
+    "doubao-pro-32k": 32_768,
+    "doubao-lite-128k": 128_000,
+    "doubao-lite-32k": 32_768,
+}
+
+_DEFAULT_CONTEXT_WINDOW = 32_768  # conservative fallback for unknown models
+
+
+def _infer_context_window(model_name: str) -> int:
+    """Infer context window size from model name using prefix matching.
+
+    Tries longest prefix match first for specificity
+    (e.g., "gpt-4-turbo" before "gpt-4").
+    """
+    if not model_name:
+        return _DEFAULT_CONTEXT_WINDOW
+    model_lower = model_name.lower()
+    # Sort by key length descending for longest-prefix-first matching
+    for prefix in sorted(KNOWN_CONTEXT_WINDOWS, key=len, reverse=True):
+        if model_lower.startswith(prefix):
+            return KNOWN_CONTEXT_WINDOWS[prefix]
+    return _DEFAULT_CONTEXT_WINDOW
+
+
 class ModelConfig(BaseSettings):
     """Single model configuration."""
     name: str = ""
@@ -89,6 +167,16 @@ class ModelConfig(BaseSettings):
     base_url: str = ""
     temperature: float | None = None  # None = don't send, let provider decide
     max_tokens: int = 4096
+    context_window: int = 0  # 0 = auto-detect from model name (see KNOWN_CONTEXT_WINDOWS)
+
+    def get_context_window(self) -> int:
+        """Get effective context window size.
+
+        Priority: explicit config → infer from model name → default 32K.
+        """
+        if self.context_window > 0:
+            return self.context_window
+        return _infer_context_window(self.model)
 
 
 class LLMSettings(BaseSettings):
