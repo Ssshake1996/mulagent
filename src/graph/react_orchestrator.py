@@ -462,14 +462,15 @@ def _build_system_prompt(
 ) -> str:
     """Build system prompt with dynamic context layers.
 
-    Layers (each with token budget):
+    Layers (each with proportional token budget based on model max_tokens):
     1. Base prompt (no limit) — core instructions + tool descriptions
-    2. Project directives (.mulagent.md) — 500 tokens
-    3. Git context (TTL 60s) — 200 tokens
-    4. Persistent memory (cross-session) — 300 tokens
-    5. Conversation history — 2000 tokens
-    6. Working memory (facts + directives) — 1500 tokens
+    2. Project directives (.mulagent.md) — 4% of max_tokens
+    3. Git context (TTL 60s) — 1.5%
+    4. Persistent memory (cross-session) — 2.5%
+    5. Conversation history — 12%
+    6. Working memory (facts + directives) — 8%
     7. System reminders (dynamic mid-loop injection) — appended as-is
+    Total dynamic ≈ 28%, leaving ~72% for base prompt + reasoning.
     """
     global _cached_project_directives
     from common.tokenizer import estimate_tokens, truncate_to_tokens
@@ -493,14 +494,28 @@ def _build_system_prompt(
     )
     parts = [base]
 
-    # ── Dynamic segments with token budgets ──
+    # ── Dynamic segments with token budgets (proportional to model context) ──
+    # Budget = model_max_tokens * ratio. Total dynamic budget ~25% of context.
+    # This leaves ~75% for base prompt + tool schemas + LLM reasoning.
+    _model_max_tokens = 4096  # fallback default
+    try:
+        from common.config import get_settings
+        _cfg = get_settings()
+        _model_cfg = _cfg.llm.get_model()
+        if _model_cfg and _model_cfg.max_tokens:
+            _model_max_tokens = _model_cfg.max_tokens
+    except Exception:
+        pass
+
+    # Ratio-based budgets (percentages of model max_tokens)
     _PROMPT_BUDGETS = {
-        "project_directives": 500,
-        "git_context": 200,
-        "persistent_memory": 300,
-        "conversation_history": 2000,
-        "working_memory": 1500,
+        "project_directives": max(200, int(_model_max_tokens * 0.04)),   # 4%
+        "git_context":        max(100, int(_model_max_tokens * 0.015)),  # 1.5%
+        "persistent_memory":  max(150, int(_model_max_tokens * 0.025)),  # 2.5%
+        "conversation_history": max(500, int(_model_max_tokens * 0.12)), # 12%
+        "working_memory":     max(400, int(_model_max_tokens * 0.08)),   # 8%
     }
+    # Total dynamic ≈ 28% of context, rest for base prompt + reasoning
 
     def _budget_append(label: str, header: str, content: str) -> None:
         if not content:

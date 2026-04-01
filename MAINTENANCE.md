@@ -647,7 +647,7 @@ metadata:
 | 工具延迟加载（Deferred Tools） | 22 个工具全量注入浪费 token，扩展工具按需加载 schema 节省 ~800 tokens/轮 |
 | System Reminder 动态注入 | 对标 Claude Code 的 system-reminder，支持循环中间插入上下文提醒 |
 | 持久化跨会话记忆（PersistentMemory） | 对标 Claude Code 的 MEMORY.md，跨会话保持用户偏好和项目上下文 |
-| Prompt 分层预算控制 | 各动态段设 token 预算上限，防止 prompt 膨胀挤占推理空间 |
+| Prompt 分层预算控制（按模型比例） | 根据 max_tokens 按比例分配各段预算，适配不同模型（Qwen 1M vs GPT-4 128K） |
 | 动态环境上下文（每轮刷新） | 替代静态 current_date，提供实时时间、工作目录、平台信息 |
 
 ---
@@ -676,10 +676,12 @@ metadata:
   - MEMORY.md 内容以 `## Persistent Memory` 段注入 system prompt
   - 300s TTL 缓存避免每轮读磁盘
   - LLM 可通过 read_file/write_file 直接操作记忆目录
-- **Prompt 分层预算控制**：
-  - 各动态段设 token 预算：project_directives(500), git_context(200), persistent_memory(300), conversation_history(2000), working_memory(1500)
+- **Prompt 分层预算控制（按模型比例）**：
+  - 根据配置中模型的 `max_tokens` 按比例动态分配各段预算
+  - 比例：project_directives(4%), git_context(1.5%), persistent_memory(2.5%), conversation_history(12%), working_memory(8%)
+  - 总动态预算 ≈ 28%，其余留给 base prompt + 推理空间
+  - 每段有最低保底值（如 conversation_history 至少 500 tokens）
   - 超出预算自动截断（使用 `truncate_to_tokens`）
-  - base_prompt 不限制
 - **动态环境上下文**：
   - 替换静态 `{current_date}` 为 `{environment_context}`
   - 每轮刷新：date(精确到分钟) + cwd + platform
