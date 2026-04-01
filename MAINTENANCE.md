@@ -56,7 +56,7 @@ mul-agent/
 │   │   ├── conversation.py        #   多轮对话管理 + 实体提取 + 上下文 CRUD
 │   │   ├── context_compressor.py  #   三维智能上下文压缩（语义分类/话题归档/相关性压缩）
 │   │   └── checkpoint.py          #   Redis 断点续作
-│   ├── tools/                     # 工具层（22 个工具）
+│   ├── tools/                     # 工具层（23 个工具，含 load_tool meta-tool）
 │   │   ├── registry.py            #   工具注册表
 │   │   ├── base.py                #   ToolDef 基类
 │   │   ├── isolation.py           #   delegate 子 agent（含后台执行 + worktree 隔离）+ check_background
@@ -150,23 +150,26 @@ react_loop(user_input, tools, llm)
   ├─ Step 2: 准备工具 Schema
   └─ Step 3: 循环（最多 max_rounds 轮）
        │
-       ├─ 构建 System Prompt（含工作记忆）
+       ├─ 动态构建 System Prompt（7 层：base + directives + git(TTL60s) + memory + history + facts + reminders）
+       ├─ Deferred tools rebind（load_tool 后下轮自动重新绑定 schema）
+       ├─ System reminders 注入（工具恢复/todo 提醒/deferred 加载通知）
        ├─ LLM 推理 → 返回工具调用或最终回答
        ├─ 如无工具调用 → 返回最终回答（可选验证）
        ├─ 循环检测（重复调用 3 次 → 强制切换策略）
        ├─ 并行执行工具（带缓存、幂等键、超时）
-       ├─ 结果压缩 → 存入工作记忆
+       ├─ 结果压缩 → 存入工作记忆（各段有 token 预算）
        ├─ 每 3 轮保存 Redis 检查点
        └─ 记忆超 15 条 → LLM 摘要压缩
 ```
 
-### 3.2 三层工作记忆
+### 3.2 四层记忆体系
 
-| 层 | 内容 | 生命周期 |
-|----|------|----------|
-| **Directives** | 用户约束（如"删除前要确认"） | 永不压缩 |
-| **State** | 结构化进度（last_tool, rounds） | 原子更新 |
-| **Facts** | 工具返回结果 | 按相关度衰减，可压缩 |
+| 层 | 内容 | 生命周期 | 存储 |
+|----|------|----------|------|
+| **Persistent Memory** | 跨会话用户偏好/项目上下文 | 永久（跨会话） | `~/.mulagent/memory/` |
+| **Directives** | 用户约束（如"删除前要确认"） | 永不压缩（会话内） | WorkingMemory |
+| **State** | 结构化进度（last_tool, rounds） | 原子更新（会话内） | WorkingMemory |
+| **Facts** | 工具返回结果 | 按相关度衰减，可压缩 | WorkingMemory |
 
 ### 3.3 子 Agent 委派
 
@@ -194,7 +197,7 @@ react_loop(user_input, tools, llm)
 
 ---
 
-## 4. 22 个工具清单
+## 4. 23 个工具清单
 
 工具按**功能分类**，选择依据是「任务需要什么」而非「哪个便宜」。
 
@@ -220,8 +223,9 @@ react_loop(user_input, tools, llm)
 | 任务管理 | `todo_manage` | 可逆 | 任务管理（create/done/update/list） |
 | | `plan_submit` | 可逆 | 提交执行计划供用户确认 |
 | | `check_background` | 只读 | 查询后台子 agent 状态和结果 |
-| 研究与委派 | `deep_research` | 只读 | 多角度深度研究 |
+| 研究与委派 | `deep_research` | 只读 | 多角度深度研究 [deferred] |
 | | `delegate` | 视子任务 | 委派给专业子 agent（后台执行 + worktree 隔离） |
+| 元工具 | `load_tool` | 只读 | 加载 deferred 工具的完整 schema（按需激活扩展工具） |
 
 ---
 
@@ -639,12 +643,49 @@ metadata:
 | 禁用工具 TTL 自动恢复 | 临时网络错误不应永久禁用工具，300s 后自动重新启用 |
 | 项目级指令文件（.mulagent.md） | 对标 Claude Code 的 CLAUDE.md，支持项目/全局两级规则注入 |
 | 自动 git 上下文注入 | 减少首轮冗余 git_ops 调用，LLM 直接获得 branch/status/commit 信息 |
+| Git 上下文 TTL 刷新（60s） | 进程级缓存会导致长时间运行后 git 状态过期，TTL 自动刷新 |
+| 工具延迟加载（Deferred Tools） | 22 个工具全量注入浪费 token，扩展工具按需加载 schema 节省 ~800 tokens/轮 |
+| System Reminder 动态注入 | 对标 Claude Code 的 system-reminder，支持循环中间插入上下文提醒 |
+| 持久化跨会话记忆（PersistentMemory） | 对标 Claude Code 的 MEMORY.md，跨会话保持用户偏好和项目上下文 |
+| Prompt 分层预算控制 | 各动态段设 token 预算上限，防止 prompt 膨胀挤占推理空间 |
+| 动态环境上下文（每轮刷新） | 替代静态 current_date，提供实时时间、工作目录、平台信息 |
 
 ---
 
 ## 12. 变更日志
 
-### v0.16.0 — 可靠性与智能化增强（当前）
+### v0.17.0 — System Prompt 动态化（当前）
+
+对标 Claude Code 动态 system prompt 机制，6 项架构优化：
+
+- **Git 上下文 TTL 刷新**：
+  - 从进程级一次性缓存改为 60s TTL 自动刷新
+  - 长时间运行的服务不再使用过期的 branch/status 信息
+- **工具延迟加载（Deferred Tools）**：
+  - 核心工具（16 个）始终发送完整 schema
+  - 扩展工具（6 个：deep_research/codemap/browser_fetch/sql_query/docs_lookup/check_background）仅列名称+描述
+  - 新增 `load_tool` meta-tool，LLM 按需加载 deferred 工具的完整 schema
+  - ToolDef 新增 `deferred: bool` 字段，下轮自动 rebind tools
+- **System Reminder 动态注入**：
+  - 新增 `_pending_reminders` 队列，在 ReAct 循环中间注入 `<system-reminder>` 提醒
+  - 触发场景：工具自动恢复、todo_manage 使用提醒、deferred 工具加载通知
+  - 通过 `_build_system_prompt(reminders=...)` 注入到 system prompt 尾部
+- **持久化跨会话记忆（PersistentMemory）**：
+  - 存储路径：`~/.mulagent/memory/`（MEMORY.md 索引 + 独立 .md 文件）
+  - 支持 save/remove/load_index 操作
+  - MEMORY.md 内容以 `## Persistent Memory` 段注入 system prompt
+  - 300s TTL 缓存避免每轮读磁盘
+  - LLM 可通过 read_file/write_file 直接操作记忆目录
+- **Prompt 分层预算控制**：
+  - 各动态段设 token 预算：project_directives(500), git_context(200), persistent_memory(300), conversation_history(2000), working_memory(1500)
+  - 超出预算自动截断（使用 `truncate_to_tokens`）
+  - base_prompt 不限制
+- **动态环境上下文**：
+  - 替换静态 `{current_date}` 为 `{environment_context}`
+  - 每轮刷新：date(精确到分钟) + cwd + platform
+  - 未来可扩展：活跃子 agent 数、内存使用等
+
+### v0.16.0 — 可靠性与智能化增强
 
 对标 Claude Code 核心机制，7 项架构改进：
 

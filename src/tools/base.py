@@ -14,6 +14,7 @@ class ToolDef:
     description: str
     parameters: dict[str, Any]  # JSON Schema for tool parameters
     fn: Callable[..., Awaitable[str]]  # async (params) -> str
+    deferred: bool = False  # True = schema not sent until load_tool is called
 
     def to_openai_schema(self) -> dict[str, Any]:
         """Convert to OpenAI-compatible function schema for tool_use."""

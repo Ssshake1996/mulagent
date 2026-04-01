@@ -362,3 +362,116 @@ def compress_tool_result(raw: str, tool_name: str, max_tokens: int = 0) -> str:
 
     else:
         return truncate_to_tokens(raw, max_tokens)
+
+
+# ── Persistent Memory (cross-session) ──────────────────────────────
+
+class PersistentMemory:
+    """File-based persistent memory that survives across sessions.
+
+    Storage layout:
+        ~/.mulagent/memory/
+        ├── MEMORY.md          # Index file (injected into system prompt)
+        ├── user_*.md          # User preferences
+        ├── project_*.md       # Project context
+        ├── feedback_*.md      # Behavior feedback
+        └── reference_*.md     # External resource pointers
+    """
+
+    _BASE_DIR = None
+
+    @classmethod
+    def _dir(cls) -> "Path":
+        if cls._BASE_DIR is None:
+            from pathlib import Path
+            cls._BASE_DIR = Path.home() / ".mulagent" / "memory"
+            cls._BASE_DIR.mkdir(parents=True, exist_ok=True)
+        return cls._BASE_DIR
+
+    @classmethod
+    def load_index(cls) -> str:
+        """Read MEMORY.md content for injection into system prompt.
+
+        Returns empty string if no memory file exists.
+        """
+        index = cls._dir() / "MEMORY.md"
+        if index.is_file():
+            try:
+                content = index.read_text(errors="replace").strip()
+                # Limit to ~200 lines to prevent prompt bloat
+                lines = content.split("\n")
+                if len(lines) > 200:
+                    content = "\n".join(lines[:200]) + "\n... (truncated)"
+                return content
+            except Exception:
+                return ""
+        return ""
+
+    @classmethod
+    def save(cls, key: str, content: str, description: str = "",
+             memory_type: str = "project") -> str:
+        """Save a memory entry and update the index.
+
+        Args:
+            key: Filename stem (e.g., 'user_role', 'feedback_testing')
+            content: Memory content (markdown body)
+            description: One-line description for the index
+            memory_type: One of user/feedback/project/reference
+        """
+        mem_dir = cls._dir()
+        filename = f"{key}.md"
+        filepath = mem_dir / filename
+
+        # Write memory file with frontmatter
+        full_content = (
+            f"---\n"
+            f"name: {key}\n"
+            f"description: {description}\n"
+            f"type: {memory_type}\n"
+            f"---\n\n"
+            f"{content}\n"
+        )
+        filepath.write_text(full_content, encoding="utf-8")
+
+        # Update index
+        cls._update_index(key, filename, description)
+        return f"Memory saved: {filename}"
+
+    @classmethod
+    def remove(cls, key: str) -> str:
+        """Remove a memory entry and update the index."""
+        mem_dir = cls._dir()
+        filename = f"{key}.md"
+        filepath = mem_dir / filename
+        if filepath.exists():
+            filepath.unlink()
+        # Remove from index
+        cls._remove_from_index(key)
+        return f"Memory removed: {filename}"
+
+    @classmethod
+    def _update_index(cls, key: str, filename: str, description: str) -> None:
+        """Add or update an entry in MEMORY.md index."""
+        index = cls._dir() / "MEMORY.md"
+        lines = []
+        if index.is_file():
+            lines = index.read_text(errors="replace").strip().split("\n")
+
+        # Remove existing entry for this key
+        lines = [l for l in lines if not l.strip().startswith(f"- [{key}]")]
+
+        # Add new entry
+        entry = f"- [{key}]({filename}) — {description}" if description else f"- [{key}]({filename})"
+        lines.append(entry)
+
+        index.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    @classmethod
+    def _remove_from_index(cls, key: str) -> None:
+        """Remove an entry from MEMORY.md index."""
+        index = cls._dir() / "MEMORY.md"
+        if not index.is_file():
+            return
+        lines = index.read_text(errors="replace").strip().split("\n")
+        lines = [l for l in lines if not l.strip().startswith(f"- [{key}]")]
+        index.write_text("\n".join(lines) + "\n", encoding="utf-8")

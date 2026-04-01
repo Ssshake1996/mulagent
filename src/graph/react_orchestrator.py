@@ -84,7 +84,7 @@ ORCHESTRATOR_PROMPT = """\
 You are a task execution agent. You complete tasks autonomously by reasoning and using tools.
 You handle diverse tasks: code, research, writing, data processing, file operations, and more.
 
-**Current date: {current_date}**
+**Environment: {environment_context}**
 
 ## Available Tools
 {tool_descriptions}
@@ -349,8 +349,8 @@ def _load_project_directives() -> str:
     return ""
 
 
-def _get_git_context() -> str:
-    """Auto-detect git repo context for the system prompt.
+def _fetch_git_context() -> str:
+    """Fetch fresh git repo context via subprocess.
 
     Returns a brief summary: branch, status, recent commit.
     Non-blocking: returns empty string if not in a git repo or git fails.
@@ -407,53 +407,128 @@ def _get_git_context() -> str:
         return ""
 
 
-# Cache project directives and git context (loaded once per process)
+# ── TTL caches ──
 _cached_project_directives: str | None = None
-_cached_git_context: str | None = None
+_git_context_cache: tuple[str, float] = ("", 0.0)  # (context, timestamp)
+_GIT_CONTEXT_TTL = 60  # seconds
+
+
+def _get_git_context() -> str:
+    """Get git context with 60s TTL cache (refreshes each session, not per-process)."""
+    global _git_context_cache
+    now = time.time()
+    if _git_context_cache[0] and now - _git_context_cache[1] < _GIT_CONTEXT_TTL:
+        return _git_context_cache[0]
+    result = _fetch_git_context()
+    _git_context_cache = (result, now)
+    return result
+
+
+def _get_environment_context() -> str:
+    """Build dynamic environment context string (refreshed every round)."""
+    import os
+    import sys
+    from datetime import datetime
+    parts = [
+        f"date: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"cwd: {os.getcwd()}",
+        f"platform: {sys.platform}",
+    ]
+    return " | ".join(parts)
+
+
+# ── Persistent memory (cross-session) ──
+_persistent_memory_cache: tuple[str, float] = ("", 0.0)
+_PERSISTENT_MEMORY_TTL = 300  # seconds
+
+
+def _get_persistent_memory() -> str:
+    """Load persistent memory from ~/.mulagent/memory/MEMORY.md with 300s TTL cache."""
+    global _persistent_memory_cache
+    now = time.time()
+    if _persistent_memory_cache[0] and now - _persistent_memory_cache[1] < _PERSISTENT_MEMORY_TTL:
+        return _persistent_memory_cache[0]
+    from graph.memory import PersistentMemory
+    result = PersistentMemory.load_index()
+    _persistent_memory_cache = (result, now)
+    return result
 
 
 def _build_system_prompt(
     tool_descriptions: str,
     memory: WorkingMemory,
     conversation_history: str = "",
+    reminders: list[str] | None = None,
 ) -> str:
-    """Build system prompt with memory context, conversation history,
-    project directives (.mulagent.md), and git context.
+    """Build system prompt with dynamic context layers.
 
-    Memory context and history go into the system prompt (not as mid-conversation
-    HumanMessages) to avoid breaking the AI→ToolMessage pairing.
+    Layers (each with token budget):
+    1. Base prompt (no limit) — core instructions + tool descriptions
+    2. Project directives (.mulagent.md) — 500 tokens
+    3. Git context (TTL 60s) — 200 tokens
+    4. Persistent memory (cross-session) — 300 tokens
+    5. Conversation history — 2000 tokens
+    6. Working memory (facts + directives) — 1500 tokens
+    7. System reminders (dynamic mid-loop injection) — appended as-is
     """
-    global _cached_project_directives, _cached_git_context
-    from datetime import date
+    global _cached_project_directives
+    from common.tokenizer import estimate_tokens, truncate_to_tokens
 
-    # Load project directives (once)
+    # Load project directives (once per process)
     if _cached_project_directives is None:
         _cached_project_directives = _load_project_directives()
 
-    # Load git context (once per process)
-    if _cached_git_context is None:
-        _cached_git_context = _get_git_context()
+    # Git context (TTL 60s, refreshes automatically)
+    git_context = _get_git_context()
+
+    # Environment context (refreshed every round)
+    env_context = _get_environment_context()
+
+    # Persistent memory (TTL 300s)
+    persistent_mem = _get_persistent_memory()
 
     base = ORCHESTRATOR_PROMPT.format(
         tool_descriptions=tool_descriptions,
-        current_date=date.today().isoformat(),
+        environment_context=env_context,
     )
     parts = [base]
 
+    # ── Dynamic segments with token budgets ──
+    _PROMPT_BUDGETS = {
+        "project_directives": 500,
+        "git_context": 200,
+        "persistent_memory": 300,
+        "conversation_history": 2000,
+        "working_memory": 1500,
+    }
+
+    def _budget_append(label: str, header: str, content: str) -> None:
+        if not content:
+            return
+        budget = _PROMPT_BUDGETS.get(label)
+        segment = f"{header}\n{content}"
+        if budget and estimate_tokens(segment) > budget:
+            segment = truncate_to_tokens(segment, budget)
+        parts.append(segment)
+
     # Project-level directives (.mulagent.md)
-    if _cached_project_directives:
-        parts.append(f"## Project Directives\n{_cached_project_directives}")
+    _budget_append("project_directives", "## Project Directives", _cached_project_directives or "")
 
     # Git context
-    if _cached_git_context:
-        parts.append(f"## Git Context\n{_cached_git_context}")
+    _budget_append("git_context", "## Git Context", git_context)
 
-    if conversation_history:
-        parts.append(f"## Conversation History\n{conversation_history}")
+    # Persistent memory (cross-session)
+    _budget_append("persistent_memory", "## Persistent Memory", persistent_mem)
+
+    _budget_append("conversation_history", "## Conversation History", conversation_history)
 
     ctx = memory.build_context_message()
-    if ctx:
-        parts.append(ctx)
+    _budget_append("working_memory", "", ctx)
+
+    # System reminders (injected dynamically during ReAct loop)
+    if reminders:
+        reminder_text = "\n".join(f"<system-reminder>{r}</system-reminder>" for r in reminders)
+        parts.append(f"## System Reminders\n{reminder_text}")
 
     return "\n\n".join(parts)
 
@@ -533,19 +608,26 @@ async def react_loop(
         if directives:
             logger.info("Extracted %d directives: %s", len(directives), directives)
 
-    # ── Step 2: Prepare tool schemas ──
+    # ── Step 2: Prepare tool schemas (deferred tools loaded on demand) ──
     from tools.base import ToolDef
     tool_defs: dict[str, ToolDef] = tools
-    tool_schemas = [t.to_openai_schema() for t in tool_defs.values()]
+    # Only send full schemas for core (non-deferred) tools
+    tool_schemas = [t.to_openai_schema() for t in tool_defs.values() if not t.deferred]
+    _loaded_deferred: set[str] = set()  # tracks which deferred tools have been loaded
+    _tools_dirty = False  # True when deferred tool loaded → rebind next round
 
     # Build tool descriptions for the system prompt
     tool_desc_lines = []
     for t in tool_defs.values():
-        params = ", ".join(
-            f"{k}: {v.get('type', 'any')}"
-            for k, v in t.parameters.get("properties", {}).items()
-        )
-        tool_desc_lines.append(f"- **{t.name}**({params}): {t.description}")
+        if t.deferred:
+            # Deferred: name + description only, no parameters
+            tool_desc_lines.append(f"- **{t.name}** [deferred]: {t.description}")
+        else:
+            params = ", ".join(
+                f"{k}: {v.get('type', 'any')}"
+                for k, v in t.parameters.get("properties", {}).items()
+            )
+            tool_desc_lines.append(f"- **{t.name}**({params}): {t.description}")
     tool_descriptions = "\n".join(tool_desc_lines)
 
     # ── Step 3: ReAct loop ──
@@ -574,19 +656,40 @@ async def react_loop(
     # Parallel call tracking: consecutive rounds with single tool call
     _single_call_rounds = 0
 
-    # Cache: bind_tools once since schemas don't change across rounds
+    # Cache: bind_tools (rebind when deferred tool is loaded)
     llm_with_tools = llm.bind_tools(tool_schemas)
     from common.retry import retry_async
 
     # Tool result cache: avoid re-executing identical calls
     _tool_cache: dict[str, str] = {}  # hash(tool_name + args) → result
 
+    # System reminders: dynamic mid-loop injection
+    _pending_reminders: list[str] = []
+    _todo_used = False  # track whether todo_manage has been called
+
     async def _run_loop() -> str:
-        nonlocal _single_call_rounds
+        nonlocal _single_call_rounds, _tools_dirty, llm_with_tools, _todo_used
         for round_num in range(max_rounds):
-            # Rebuild messages: system (with context + history) + user + conversation
+            # Rebind tools if deferred tool was loaded last round
+            if _tools_dirty:
+                tool_schemas_now = [t.to_openai_schema() for t in tool_defs.values()
+                                    if not t.deferred or t.name in _loaded_deferred]
+                llm_with_tools = llm.bind_tools(tool_schemas_now)
+                _tools_dirty = False
+
+            # ── System reminder: todo_manage nudge ──
+            if not _todo_used and round_num >= 3 and not is_sub_agent:
+                _pending_reminders.append(
+                    "You haven't created a task list yet. For multi-step tasks, "
+                    "use todo_manage(action='create') to track progress."
+                )
+
+            # Rebuild messages: system (with context + history + reminders) + user + conversation
+            current_reminders = list(_pending_reminders)
+            _pending_reminders.clear()
             system_prompt = _build_system_prompt(
                 tool_descriptions, memory, conversation_history,
+                reminders=current_reminders if current_reminders else None,
             )
             messages = [
                 SystemMessage(content=system_prompt),
@@ -704,6 +807,7 @@ async def react_loop(
                 del disabled_tools[t]
                 tool_fail_counts.pop(t, None)
                 logger.info("Tool %s auto-recovered after %ds TTL", t, _DISABLED_TTL)
+                _pending_reminders.append(f"Tool '{t}' has been re-enabled after recovery timeout.")
 
             # Check if calling a disabled tool
             calling_disabled = any(tc["name"] in disabled_tools for tc in tool_calls)
@@ -743,6 +847,23 @@ async def react_loop(
                 t_def = tool_defs.get(t_name)
                 if t_def is None:
                     return tc, f"Error: unknown tool '{t_name}'"
+
+                # ── Track todo_manage usage ──
+                if t_name == "todo_manage":
+                    _todo_used = True
+
+                # ── Deferred tool loading: load_tool triggers rebind ──
+                if t_name == "load_tool":
+                    loaded_name = t_args.get("name", "")
+                    result = await t_def.fn(t_args, tools=tool_defs)
+                    if loaded_name and loaded_name in tool_defs and tool_defs[loaded_name].deferred:
+                        _loaded_deferred.add(loaded_name)
+                        _tools_dirty = True
+                        _pending_reminders.append(
+                            f"Tool '{loaded_name}' is now available with full schema. "
+                            f"You can call it in the next round."
+                        )
+                    return tc, result
 
                 # ── Read-before-edit enforcement ──
                 if t_name in ("edit_file", "write_file") and not is_sub_agent:
