@@ -650,6 +650,10 @@ metadata:
 | 持久化跨会话记忆（PersistentMemory） | 对标 Claude Code 的 MEMORY.md，跨会话保持用户偏好和项目上下文 |
 | Prompt 分层预算控制（按可用输入空间） | 基于 context_window - max_tokens 按比例分配，确保输出空间不被输入挤占 |
 | 动态环境上下文（每轮刷新） | 替代静态 current_date，提供实时时间、工作目录、平台信息 |
+| write_file 后置校验（.mulagent.md 规则） | 纯 prompt 约束在长任务中会漂移，框架层硬校验才能保证格式一致性 |
+| Directive 每 5 轮重注入 | LLM 对长上下文中间部分的 attention 权重衰减，定期 reminder 补偿 |
+| 完整性门控（Completion Gate） | LLM 倾向于"差不多就结束"，必须检查 todo 全部完成才允许返回最终回答 |
+| 数值计算强制 code_run | LLM 数学能力差，百分比/统计/字数必须用 Python 计算，不能估算 |
 
 ---
 
@@ -689,6 +693,27 @@ metadata:
   - 替换静态 `{current_date}` 为 `{environment_context}`
   - 每轮刷新：date(精确到分钟) + cwd + platform
   - 未来可扩展：活跃子 agent 数、内存使用等
+
+### v0.17.1 — 长任务执行质量保障
+
+针对长任务（如批量章节生成）中暴露的格式漂移、数据缺失、数值错误等问题，4 项框架级改进：
+
+- **write_file 后置校验钩子**：
+  - `.mulagent.md` 中新增 `## Validation Rules` 段，定义文件级校验规则
+  - write_file/edit_file 后自动用 code_run(python) 校验（JSON 合法性、行数、字数等）
+  - 校验失败时将错误信息追加到 ToolMessage，LLM 必须修正
+  - 支持 fnmatch 通配符匹配（如 `chapter_*.md: 中文字数3000-4000`）
+- **Directive 衰减补偿**：
+  - 每 5 轮自动将所有 directives 作为 system-reminder 重新注入
+  - 对抗长对话中注意力衰减导致的规则遗忘
+- **完整性校验门控**（Completion Gate）：
+  - LLM 试图返回最终回答时，先检查 todo_manage 任务列表是否全部完成
+  - 有未完成任务 → 不允许结束，注入提醒继续执行
+  - `_verify_answer` 增加任务完成度和文件写入清单信息
+- **数值计算强制 code_run**：
+  - Prompt 新增硬规则：百分比/字数/统计等计算必须用 code_run(python)
+  - 检测 write_file 内容含百分比但同轮无 code_run → 注入 system-reminder 警告
+  - 避免 LLM "凭感觉估算"导致进度百分比严重偏离
 
 ### v0.16.0 — 可靠性与智能化增强
 

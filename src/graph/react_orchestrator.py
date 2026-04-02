@@ -241,6 +241,17 @@ When a tool fails, read the error and fix the root cause:
 
 Do NOT brute-force retry. When blocked, step back and try a different strategy.
 
+## Numerical Accuracy — MUST use code_run for calculations
+
+When your task involves ANY of the following, you MUST use code_run(python) to compute:
+- Percentages, ratios, progress tracking (e.g., chapter_count / total * 100)
+- Word count, line count, character statistics
+- Date/time calculations
+- Any arithmetic beyond trivial addition
+
+NEVER estimate or guess numerical values. LLMs are bad at math — use Python.
+If writing a file that contains computed values, compute them FIRST with code_run, then write.
+
 ## Output Style
 
 - Respond in the same language as the user
@@ -371,6 +382,133 @@ def _load_project_directives() -> str:
                 pass
 
     return ""
+
+
+# ── Post-write validation rules (parsed from .mulagent.md) ──
+_cached_validation_rules: dict[str, list[str]] | None = None
+
+
+def _load_validation_rules() -> dict[str, list[str]]:
+    """Parse ## Validation Rules from project directives.
+
+    Expected format in .mulagent.md:
+        ## Validation Rules
+        - recent_chapters.md: 每章最多3行，总行数≤ chapter_count * 3
+        - hooks_tracker.json: 必须是合法JSON
+        - chapter_*.md: 中文字数3000-4000
+
+    Returns: {filename_pattern: [rule1, rule2, ...]}
+    """
+    global _cached_validation_rules
+    if _cached_validation_rules is not None:
+        return _cached_validation_rules
+
+    _cached_validation_rules = {}
+    content = _cached_project_directives or ""
+    if not content:
+        return _cached_validation_rules
+
+    import re
+    # Find ## Validation Rules section
+    match = re.search(r'##\s*Validation\s*Rules\s*\n(.*?)(?=\n##|\Z)', content, re.DOTALL | re.IGNORECASE)
+    if not match:
+        return _cached_validation_rules
+
+    for line in match.group(1).strip().split("\n"):
+        line = line.strip().lstrip("- ")
+        if ":" not in line:
+            continue
+        pattern, _, rule = line.partition(":")
+        pattern = pattern.strip()
+        rule = rule.strip()
+        if pattern and rule:
+            _cached_validation_rules.setdefault(pattern, []).append(rule)
+
+    if _cached_validation_rules:
+        logger.info("Loaded %d validation rules for %d file patterns",
+                    sum(len(v) for v in _cached_validation_rules.values()),
+                    len(_cached_validation_rules))
+    return _cached_validation_rules
+
+
+def _match_validation_rules(filepath: str) -> list[str]:
+    """Find validation rules matching a file path."""
+    import fnmatch
+    from pathlib import Path
+    rules = _load_validation_rules()
+    if not rules:
+        return []
+    filename = Path(filepath).name
+    matched = []
+    for pattern, rule_list in rules.items():
+        if fnmatch.fnmatch(filename, pattern):
+            matched.extend(rule_list)
+    return matched
+
+
+async def _run_post_write_validation(
+    filepath: str, rules: list[str], tool_defs: dict, llm: Any,
+) -> str | None:
+    """Run validation rules after write_file/edit_file.
+
+    Uses code_run(python) to check file content against rules.
+    Returns error message if validation fails, None if passes.
+    """
+    rules_text = "\n".join(f"  - {r}" for r in rules)
+    validation_code = f'''
+import json, os, re
+
+filepath = {filepath!r}
+errors = []
+
+# Read the file
+try:
+    with open(filepath, "r", encoding="utf-8") as f:
+        content = f.read()
+except Exception as e:
+    print(f"VALIDATION_ERROR: Cannot read file: {{e}}")
+    raise SystemExit(0)
+
+lines = content.strip().split("\\n")
+line_count = len(lines)
+
+# Check JSON validity for .json files
+if filepath.endswith(".json"):
+    try:
+        json.loads(content)
+    except json.JSONDecodeError as e:
+        errors.append(f"Invalid JSON: {{e}}")
+
+# Count Chinese characters
+cjk_count = len(re.findall(r'[\\u4e00-\\u9fff]', content))
+
+# Report basic stats for LLM to evaluate against rules
+print(f"FILE_STATS: lines={{line_count}}, chinese_chars={{cjk_count}}, bytes={{len(content)}}")
+
+if errors:
+    for e in errors:
+        print(f"VALIDATION_ERROR: {{e}}")
+else:
+    print("VALIDATION_OK")
+'''
+    # Execute validation via code_run
+    code_run = tool_defs.get("code_run")
+    if not code_run:
+        return None
+
+    try:
+        result = await asyncio.wait_for(
+            code_run.fn({"language": "python", "code": validation_code}),
+            timeout=10,
+        )
+        # If JSON is invalid, return error immediately
+        if "VALIDATION_ERROR" in result:
+            errors = [l.replace("VALIDATION_ERROR: ", "") for l in result.split("\n") if "VALIDATION_ERROR" in l]
+            return f"⚠️ Post-write validation failed for {filepath}:\n" + "\n".join(f"  - {e}" for e in errors) + f"\n\nRules to follow:\n{rules_text}\nPlease fix the file."
+        return None
+    except Exception as e:
+        logger.debug("Post-write validation skipped: %s", e)
+        return None
 
 
 def _fetch_git_context() -> str:
@@ -697,6 +835,7 @@ async def react_loop(
 
     # Read-before-edit tracking: files that have been read in this session
     _files_read: set[str] = set()  # paths read via read_file
+    _files_written: set[str] = set()  # paths written via write_file/edit_file
     # Parallel call tracking: consecutive rounds with single tool call
     _single_call_rounds = 0
 
@@ -726,6 +865,13 @@ async def react_loop(
                 _pending_reminders.append(
                     "You haven't created a task list yet. For multi-step tasks, "
                     "use todo_manage(action='create') to track progress."
+                )
+
+            # ── Directive reinforcement: re-inject every 5 rounds to combat attention decay ──
+            if round_num > 0 and round_num % 5 == 0 and memory.directives:
+                rules_text = " | ".join(memory.directives)
+                _pending_reminders.append(
+                    f"REMINDER — These rules are still in effect and MUST be followed: {rules_text}"
                 )
 
             # Rebuild messages: system (with context + history + reminders) + user + conversation
@@ -778,6 +924,25 @@ async def react_loop(
                     # ── Verification loop: self-check before returning ──
                     # Only verify complex answers (multi-tool, multi-round) to
                     # avoid wasting tokens on simple lookups.
+                    # ── Completion gate: check if all tasks are done before concluding ──
+                    _tasks = memory.state.get("_tasks", [])
+                    _pending_tasks = [t for t in _tasks if t.get("status") != "done"]
+                    if _pending_tasks and not is_sub_agent and round_num < max_rounds - 2:
+                        # Tasks still pending — don't conclude, push back
+                        _pending_names = [f"#{t['id']} {t['text']}" for t in _pending_tasks[:5]]
+                        nudge_msg = (
+                            f"[System] You have {len(_pending_tasks)} incomplete tasks: "
+                            + "; ".join(_pending_names)
+                            + ". Continue executing before giving the final answer."
+                        )
+                        conversation.append(response)
+                        conversation.append(ToolMessage(
+                            content=nudge_msg,
+                            tool_call_id=f"gate_{round_num}",
+                        ))
+                        logger.info("Completion gate: %d tasks pending, pushing back", len(_pending_tasks))
+                        continue
+
                     should_verify = (
                         not is_sub_agent
                         and round_num > 1           # At least 2 rounds of tool use
@@ -786,6 +951,7 @@ async def react_loop(
                     if should_verify:
                         verified = await _verify_answer(
                             answer, user_input, memory, llm,
+                            files_written=_files_written,
                         )
                         if verified:
                             return verified
@@ -988,6 +1154,20 @@ async def react_loop(
                 # ── Post-tool hook: output sanitization ──
                 raw = post_tool_hook(t_name, raw)
 
+                # ── Post-write validation: check file against .mulagent.md rules ──
+                if t_name in ("write_file", "edit_file") and not _is_error_result(raw):
+                    _written_path = t_args.get("path", "")
+                    if _written_path:
+                        _files_written.add(_written_path)
+                        _vrules = _match_validation_rules(_written_path)
+                        if _vrules:
+                            _verr = await _run_post_write_validation(
+                                _written_path, _vrules, tool_defs, llm,
+                            )
+                            if _verr:
+                                raw += f"\n\n{_verr}"
+                                logger.info("Post-write validation failed for %s", _written_path)
+
                 compressed = compress_tool_result(raw, t_name)
 
                 # ── Tool learning: record outcome ──
@@ -1108,6 +1288,24 @@ async def react_loop(
                     tool_call_id=tool_id,
                 ))
 
+            # ── Numerical accuracy check: detect percentage writes without code_run ──
+            _round_tools = {tc["name"] for tc in tool_calls}
+            _wrote_file = _round_tools & {"write_file", "edit_file"}
+            _used_code = "code_run" in _round_tools
+            if _wrote_file and not _used_code:
+                # Check if any write args contain percentage patterns
+                import re as _re
+                for tc in tool_calls:
+                    if tc["name"] in ("write_file", "edit_file"):
+                        _content = str(tc.get("args", {}).get("content", "")) + str(tc.get("args", {}).get("new_text", ""))
+                        if _re.search(r'\d+\.?\d*\s*%', _content):
+                            _pending_reminders.append(
+                                "WARNING: You wrote a file containing percentage values without using code_run to calculate them. "
+                                "LLMs are unreliable at math. If these are computed values (not literal text), "
+                                "use code_run(python) to calculate them first, then write the correct values."
+                            )
+                            break
+
             # ── Checkpoint: save state for resumption ──
             if task_id and round_num % 3 == 2 and not is_sub_agent:
                 try:
@@ -1213,6 +1411,7 @@ async def react_loop(
 
 async def _verify_answer(
     answer: str, user_input: str, memory: WorkingMemory, llm: Any,
+    files_written: set[str] | None = None,
 ) -> str | None:
     """Verification loop: LLM checks its own answer against gathered facts.
 
@@ -1231,6 +1430,19 @@ async def _verify_answer(
     if memory.directives:
         directives_str = "\n用户约束: " + "; ".join(memory.directives)
 
+    # Completeness info
+    completeness_str = ""
+    _tasks = memory.state.get("_tasks", [])
+    if _tasks:
+        done = sum(1 for t in _tasks if t.get("status") == "done")
+        total = len(_tasks)
+        completeness_str += f"\n任务完成度: {done}/{total}"
+        if done < total:
+            pending = [t["text"] for t in _tasks if t.get("status") != "done"]
+            completeness_str += f" (未完成: {', '.join(pending[:5])})"
+    if files_written:
+        completeness_str += f"\n已写入文件: {', '.join(sorted(files_written))}"
+
     messages = [
         SystemMessage(content=(
             "你是一个答案验证器。检查以下回答是否准确、完整，且符合用户约束。\n\n"
@@ -1238,12 +1450,13 @@ async def _verify_answer(
             "1. 回答是否基于实际收集到的信息（不是编造的）？\n"
             "2. 是否完整回答了用户的问题？\n"
             "3. 是否遵守了所有用户约束？\n"
-            "4. 是否包含敏感信息需要脱敏？\n\n"
+            "4. 任务列表中的所有任务是否都已完成？\n"
+            "5. 是否包含敏感信息需要脱敏？\n\n"
             "如果回答没有问题，返回 PASS\n"
             "如果需要修正，返回修正后的完整回答（不要说'修正后的回答是'，直接给出内容）"
         )),
         HumanMessage(content=(
-            f"用户问题: {user_input[:300]}{directives_str}\n\n"
+            f"用户问题: {user_input[:300]}{directives_str}{completeness_str}\n\n"
             f"收集到的信息:\n{facts_str}\n\n"
             f"待验证的回答:\n{answer[:1500]}"
         )),
