@@ -1108,7 +1108,7 @@ async def react_loop(
                         try:
                             confirm_detail = json.dumps({
                                 "tool": t_name,
-                                "args": _brief_args(t_args),
+                                "args": _brief_args(t_args, max_val=500),
                                 "reason": blocked.replace("[CONFIRM_REQUIRED] ", ""),
                             }, ensure_ascii=False)
                             approved = await on_progress(round_num + 1, "confirm_required", confirm_detail)
@@ -1645,12 +1645,12 @@ def _is_error_result(text: str) -> bool:
     return classify_tool_error(text) != ToolErrorKind.OK
 
 
-def _brief_args(args: dict) -> str:
-    """Abbreviate tool args for logging."""
+def _brief_args(args: dict, max_val: int = 50) -> str:
+    """Abbreviate tool args for logging (default 50 chars per value)."""
     parts = []
     for k, v in args.items():
         s = str(v)
-        if len(s) > 50:
-            s = s[:50] + "..."
+        if len(s) > max_val:
+            s = s[:max_val] + "..."
         parts.append(f"{k}={s}")
     return ", ".join(parts)

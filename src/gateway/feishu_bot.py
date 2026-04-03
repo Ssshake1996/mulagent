@@ -478,10 +478,15 @@ class ProgressTracker:
         _confirm_events[confirm_id] = event
 
         # Build confirmation card with approve/reject buttons
+        # Wrap long args in code block for readability
+        if len(args_str) > 80:
+            args_display = f"\n```\n{args_str}\n```"
+        else:
+            args_display = f"`{args_str}`"
         confirm_text = (
             f"⚠️ **需要确认**\n\n"
             f"**工具**: `{tool_name}`\n"
-            f"**操作**: {args_str}\n"
+            f"**操作**: {args_display}\n"
             f"**原因**: {reason}\n\n"
             f"请确认是否执行此操作："
         )
