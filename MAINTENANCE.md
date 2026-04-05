@@ -698,8 +698,8 @@ metadata:
   - `max_iterations`: 最大迭代轮次（默认 3）
   - `max_subtask_retries`: 单个子任务最多重做次数（默认 2）
   - `convergence_threshold`: 连续无提升轮次阈值（默认 2）
-  - `project_timeout`: 项目总超时（默认 1800s）
   - `max_parallel_subtasks`: 最大并行子任务数（默认 3）
+  - 无项目总超时 — 子任务继承 `react.timeout`，项目只要在推进就不会中断
 - **项目 Checkpoint**：
   - Redis 持久化（key 前缀 `project:`，TTL 24h）
   - 支持中断后恢复：`resume_project()` 从断点继续执行

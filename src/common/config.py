@@ -252,7 +252,6 @@ class ProjectPilotSettings(BaseSettings):
     max_iterations: int = 3            # 最大迭代轮次（Plan→Execute→Review 循环）
     max_subtask_retries: int = 2       # 单个子任务最多重做次数
     convergence_threshold: int = 2     # 连续 N 轮评分无提升则停止
-    project_timeout: int = 1800        # 项目总超时（秒）
     max_parallel_subtasks: int = 3     # 最大并行子任务数
 
 

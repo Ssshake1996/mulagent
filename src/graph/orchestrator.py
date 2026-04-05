@@ -237,11 +237,7 @@ async def run_project_pilot(
             "error": "no_llm",
         }
 
-    from common.config import get_settings
     from graph.project_pilot import run_project, format_project_result
-
-    cfg = get_settings().project_pilot
-    effective_timeout = timeout or cfg.project_timeout
 
     react_params = {
         "llm": llm,
@@ -250,15 +246,14 @@ async def run_project_pilot(
     }
 
     try:
-        state = await asyncio.wait_for(
-            run_project(
-                user_input=user_input,
-                llm=llm,
-                on_event=on_event,
-                session_id=session_id,
-                **react_params,
-            ),
-            timeout=effective_timeout,
+        # No project-level timeout — subtasks inherit react.timeout individually.
+        # A large project may run for hours; as long as subtasks keep progressing, let it run.
+        state = await run_project(
+            user_input=user_input,
+            llm=llm,
+            on_event=on_event,
+            session_id=session_id,
+            **react_params,
         )
 
         output = format_project_result(state)
@@ -274,14 +269,6 @@ async def run_project_pilot(
             "completed_count": state.completed_count(),
         }
 
-    except asyncio.TimeoutError:
-        logger.error("ProjectPilot timed out after %ds", effective_timeout)
-        return {
-            "final_output": f"项目执行超时（{effective_timeout}s）。请简化任务或增加超时配置。",
-            "status": "failed",
-            "intent": "project",
-            "error": "timeout",
-        }
     except Exception as e:
         logger.exception("ProjectPilot failed")
         return {
