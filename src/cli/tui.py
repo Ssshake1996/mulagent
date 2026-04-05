@@ -224,8 +224,7 @@ class MulAgentApp(App):
     /* ── Top bar ── */
     #top-bar {
         height: 1;
-        background: #111111 !important;
-        color: #cccccc;
+        color: #44aaff;
         padding: 0 2;
         text-style: bold;
     }
@@ -241,8 +240,7 @@ class MulAgentApp(App):
     #left-panel-title {
         text-style: bold;
         padding: 0 1;
-        color: $accent;
-        background: #111111 !important;
+        color: #44aaff;
     }
     #session-list { height: 1fr; overflow-y: auto; }
     #session-list > ListItem {
@@ -251,14 +249,12 @@ class MulAgentApp(App):
         text-style: underline;
     }
     #session-list > ListItem:hover {
-        background: #222222 !important;
-        color: #88ccff;
+        color: #99ccff;
     }
     #fav-title {
         text-style: bold;
         padding: 0 1;
-        color: $accent;
-        background: #111111 !important;
+        color: #44aaff;
         border-top: solid #333333;
     }
     #fav-list { height: auto; max-height: 10; overflow-y: auto; }
@@ -269,21 +265,18 @@ class MulAgentApp(App):
     TabbedContent ContentSwitcher { height: 1fr; }
     TabPane { height: 1fr; padding: 0; }
 
-    /* ── Tab buttons ── */
+    /* ── Tab buttons (text-only, no bg change) ── */
     ContentTab {
-        background: #222222 !important;
-        color: #888888;
+        color: #666666;
         padding: 0 2;
         margin: 0 1 0 0;
-        text-style: bold;
     }
     ContentTab:hover {
-        background: #333333 !important;
-        color: #cccccc;
+        color: #aaaaaa;
     }
     ContentTab.-active {
-        background: #4488cc !important;
-        color: #ffffff;
+        color: #44aaff;
+        text-style: bold;
     }
     Underline {
         height: 0;
@@ -299,8 +292,7 @@ class MulAgentApp(App):
     .panel-section-title {
         text-style: bold;
         padding: 0 1;
-        color: $accent;
-        background: #111111 !important;
+        color: #44aaff;
     }
     #activity-log { height: 1fr; padding: 0 1; }
     #progress-bar { height: 1; padding: 0 1; color: $warning; }
@@ -311,15 +303,14 @@ class MulAgentApp(App):
         display: none;
         height: auto; max-height: 14;
         padding: 0 1;
-        background: #111111 !important; border: solid #333333; margin: 0 1;
+        border: solid #333333; margin: 0 1;
     }
     #cmd-popup.visible { display: block; }
     #input-bar { padding: 0 1; }
     #shortcut-bar {
         height: 1;
         padding: 0 1;
-        color: #666666;
-        background: #111111 !important;
+        color: #555555;
     }
     """
 
