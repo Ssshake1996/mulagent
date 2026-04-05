@@ -50,6 +50,7 @@ class ProjectState:
     project_id: str
     session_id: str
     original_input: str
+    acceptance_criteria: str = ""     # clarified goal + measurable acceptance criteria
     subtasks: list[SubTask] = field(default_factory=list)
     iteration: int = 0
     scores: list[int] = field(default_factory=list)   # review score per iteration
@@ -73,18 +74,81 @@ class ProjectState:
 OnEventCallback = Callable[[str, ProjectState, dict], Awaitable[Any]]
 
 
+# ── Goal Clarification ───────────────────────────────────────────────
+
+_CLARIFY_GOAL_PROMPT = """\
+The user has described a project goal below. It may be vague or incomplete.
+
+Your job: interpret the user's intent and produce a clear, structured set of acceptance criteria \
+that can be used to objectively evaluate whether the project is successful.
+
+Rules:
+- Infer what the user most likely wants, even if they didn't state it explicitly.
+- Each criterion should be concrete and verifiable (not "make it good", but "API returns 200 on /health").
+- Cover: functional requirements, key constraints, and definition of done.
+- Use the same language as the user's input.
+- Return ONLY valid JSON, no explanation.
+
+Format:
+{{
+  "clarified_goal": "one paragraph restating what the user actually wants to achieve",
+  "acceptance_criteria": [
+    "criterion 1: ...",
+    "criterion 2: ...",
+    ...
+  ]
+}}
+
+User's input:
+{user_input}
+"""
+
+
+async def clarify_goal(user_input: str, llm: Any) -> tuple[str, list[str]]:
+    """Clarify a potentially vague user goal into measurable acceptance criteria.
+
+    Returns (clarified_goal_text, list_of_criteria).
+    """
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    messages = [
+        SystemMessage(content="You are a requirements analyst. Return only valid JSON."),
+        HumanMessage(content=_CLARIFY_GOAL_PROMPT.format(user_input=user_input[:3000])),
+    ]
+
+    try:
+        response = await asyncio.wait_for(llm.ainvoke(messages), timeout=30)
+        content = response.content.strip()
+        if content.startswith("```"):
+            lines = content.split("\n")
+            content = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+        result = json.loads(content)
+        goal = result.get("clarified_goal", user_input)
+        criteria = result.get("acceptance_criteria", [])
+        if not criteria:
+            return goal, [f"完成用户要求: {user_input[:200]}"]
+        logger.info("Goal clarified: %d acceptance criteria", len(criteria))
+        return goal, criteria
+    except Exception as e:
+        logger.warning("Goal clarification failed: %s, using original input", e)
+        return user_input, [f"完成用户要求: {user_input[:200]}"]
+
+
 # ── Decomposition ────────────────────────────────────────────────────
 
 _DECOMPOSE_PROMPT = """\
 You are a project planner. Break down the following project into ordered sub-tasks.
 
-IMPORTANT: The user's goal below is your north star. Every sub-task must directly \
-contribute to achieving this goal. Do NOT add tasks that are "nice to have" but \
-don't serve the core objective.
+## Clarified Goal
+{clarified_goal}
+
+## Acceptance Criteria (every sub-task must contribute to meeting these)
+{acceptance_criteria}
 
 Rules:
+- Every sub-task must directly serve one or more acceptance criteria above. Do NOT add "nice to have" tasks.
 - Each sub-task should be independently executable by an AI agent with tool access.
-- Each sub-task description must clearly state what outcome is expected and how it serves the user's goal.
+- Each sub-task description must clearly state what outcome is expected.
 - Identify dependencies: which tasks must complete before others can start.
 - Keep the number of tasks reasonable (3-10 for most projects).
 - Return ONLY valid JSON, no explanation.
@@ -95,19 +159,25 @@ Format:
   {{"id": "t2", "description": "...", "depends_on": ["t1"]}},
   ...
 ]
-
-User's Goal:
-{user_input}
 """
 
 
-async def decompose_project(user_input: str, llm: Any) -> list[SubTask]:
+async def decompose_project(
+    user_input: str, llm: Any,
+    clarified_goal: str = "", acceptance_criteria: list[str] | None = None,
+) -> list[SubTask]:
     """Use LLM to decompose a project into ordered sub-tasks with dependencies."""
     from langchain_core.messages import HumanMessage, SystemMessage
 
+    goal_text = clarified_goal or user_input
+    criteria_text = "\n".join(f"- {c}" for c in (acceptance_criteria or [])) or "(none specified)"
+
     messages = [
         SystemMessage(content="You are a project planning assistant. Return only valid JSON."),
-        HumanMessage(content=_DECOMPOSE_PROMPT.format(user_input=user_input[:3000])),
+        HumanMessage(content=_DECOMPOSE_PROMPT.format(
+            clarified_goal=goal_text[:2000],
+            acceptance_criteria=criteria_text,
+        )),
     ]
 
     response = await asyncio.wait_for(llm.ainvoke(messages), timeout=30)
@@ -210,10 +280,13 @@ def build_subtask_context(
 # ── Review & Re-plan ─────────────────────────────────────────────────
 
 _REVIEW_PROMPT = """\
-You are reviewing a project's progress. Your ONLY evaluation standard is the user's original goal below.
+You are reviewing a project's progress. Your ONLY evaluation standard is the acceptance criteria below.
 
-## User's Original Goal (this is your evaluation anchor)
-{original_input}
+## Clarified Goal
+{clarified_goal}
+
+## Acceptance Criteria (your evaluation checklist)
+{acceptance_criteria}
 
 ## Completed Tasks and Results
 {completed_summary}
@@ -222,15 +295,15 @@ You are reviewing a project's progress. Your ONLY evaluation standard is the use
 {remaining_summary}
 
 ## Evaluation Criteria (all measured against the user's original goal)
-1. **Goal alignment** (1-5): Are the completed results actually serving the user's original goal? \
-1=completely off-track, 3=partially aligned, 5=directly advancing the goal.
+1. **Criteria coverage** (1-5): How many acceptance criteria are being met by the completed work? \
+1=none met, 3=some met, 5=all met or on track to be met.
 2. **Correction needed?**: Do any completed tasks need to be redone because their output \
-diverges from or fails to serve the user's original goal?
+fails to satisfy the acceptance criteria?
 3. **Plan adjustment?**: Based on what we've learned, do remaining tasks need to be modified \
-to better achieve the user's original goal?
+to better satisfy the acceptance criteria?
 
 IMPORTANT: Do NOT evaluate tasks in isolation. A task that "completed successfully" but \
-produced results irrelevant to the user's goal should score LOW and be flagged for correction.
+produced results that don't advance any acceptance criterion should score LOW and be flagged for correction.
 
 Return JSON only:
 {{
@@ -269,8 +342,12 @@ async def review_iteration(
         f"[{t.id}] {t.description[:100]}" for t in remaining
     ) or "(none — all tasks completed)"
 
+    # Parse acceptance criteria from state
+    criteria_text = state.acceptance_criteria or f"完成用户要求: {state.original_input[:500]}"
+
     prompt = _REVIEW_PROMPT.format(
-        original_input=state.original_input[:1000],
+        clarified_goal=state.acceptance_criteria.split("\n")[0] if state.acceptance_criteria else state.original_input[:500],
+        acceptance_criteria=criteria_text,
         completed_summary=completed_summary,
         remaining_summary=remaining_summary,
     )
@@ -343,6 +420,7 @@ async def save_project_checkpoint(state: ProjectState) -> bool:
         "project_id": state.project_id,
         "session_id": state.session_id,
         "original_input": state.original_input,
+        "acceptance_criteria": state.acceptance_criteria,
         "subtasks": [asdict(t) for t in state.subtasks],
         "iteration": state.iteration,
         "scores": state.scores,
@@ -373,6 +451,7 @@ async def load_project_checkpoint(project_id: str) -> ProjectState | None:
             project_id=raw["project_id"],
             session_id=raw.get("session_id", ""),
             original_input=raw["original_input"],
+            acceptance_criteria=raw.get("acceptance_criteria", ""),
             subtasks=subtasks,
             iteration=raw.get("iteration", 0),
             scores=raw.get("scores", []),
@@ -412,19 +491,31 @@ async def run_project(
     cfg = get_settings().project_pilot
     project_id = uuid.uuid4().hex[:12]
 
-    # ── Step 1: Decompose ──
+    # ── Step 1: Clarify goal → measurable acceptance criteria ──
     if on_event:
         await on_event("project_start", ProjectState(
             project_id=project_id, session_id=session_id,
             original_input=user_input,
+        ), {"phase": "clarifying_goal"})
+
+    clarified_goal, criteria = await clarify_goal(user_input, llm)
+    acceptance_text = f"{clarified_goal}\n\n验收标准:\n" + "\n".join(f"- {c}" for c in criteria)
+    logger.info("Goal clarified: %s, %d criteria", clarified_goal[:80], len(criteria))
+
+    # ── Step 2: Decompose based on clarified goal ──
+    if on_event:
+        await on_event("project_progress", ProjectState(
+            project_id=project_id, session_id=session_id,
+            original_input=user_input, acceptance_criteria=acceptance_text,
         ), {"phase": "decomposing"})
 
-    subtasks = await decompose_project(user_input, llm)
+    subtasks = await decompose_project(user_input, llm, clarified_goal, criteria)
 
     state = ProjectState(
         project_id=project_id,
         session_id=session_id,
         original_input=user_input,
+        acceptance_criteria=acceptance_text,
         subtasks=subtasks,
     )
 
@@ -710,6 +801,8 @@ def format_project_result(state: ProjectState) -> str:
     parts.append(f"- 迭代轮次: {state.iteration}")
     if state.scores:
         parts.append(f"- 审查评分: {' → '.join(str(s) for s in state.scores)}")
+    if state.acceptance_criteria:
+        parts.append(f"\n## 验收标准\n{state.acceptance_criteria}")
 
     parts.append("\n## 各任务结果\n")
     for t in state.subtasks:
