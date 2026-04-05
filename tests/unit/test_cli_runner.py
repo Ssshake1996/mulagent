@@ -50,9 +50,9 @@ def runner(mock_settings, mock_llm_manager, tmp_path):
         patch("cli.runner.create_session_factory", side_effect=Exception("no db")),
         patch("cli.runner.ConversationStore") as mock_conv,
     ):
-        # Qdrant mock
+        # Qdrant mock — returns (client, is_remote) tuple
         qdrant_client = MagicMock()
-        mock_qdrant.return_value = qdrant_client
+        mock_qdrant.return_value = (qdrant_client, True)
 
         # ConversationStore mock
         conv_instance = MagicMock()

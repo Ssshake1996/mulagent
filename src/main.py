@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI):
             logger.warning("Database unavailable, traces disabled", error=str(e))
 
     # Initialize Qdrant (in-memory fallback if remote unavailable)
-    qdrant = get_qdrant_client()
+    qdrant, _ = get_qdrant_client()
     collection_name = settings.qdrant.collection_name if settings.qdrant else "case_library"
     ensure_collection(qdrant, collection_name)
     logger.info("Qdrant case library ready", collection=collection_name)

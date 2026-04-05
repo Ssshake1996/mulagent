@@ -38,20 +38,20 @@ def test_embedding_normalized():
 # --- Qdrant in-memory tests ---
 
 def test_qdrant_in_memory():
-    client = get_qdrant_client(in_memory=True)
+    client, _ = get_qdrant_client(in_memory=True)
     collections = client.get_collections().collections
     assert isinstance(collections, list)
 
 
 def test_ensure_collection_creates():
-    client = get_qdrant_client(in_memory=True)
+    client, _ = get_qdrant_client(in_memory=True)
     ensure_collection(client, "test_collection")
     names = [c.name for c in client.get_collections().collections]
     assert "test_collection" in names
 
 
 def test_ensure_collection_idempotent():
-    client = get_qdrant_client(in_memory=True)
+    client, _ = get_qdrant_client(in_memory=True)
     ensure_collection(client, "test_col")
     ensure_collection(client, "test_col")  # should not raise
     names = [c.name for c in client.get_collections().collections]
@@ -62,7 +62,7 @@ def test_ensure_collection_idempotent():
 
 @pytest.mark.asyncio
 async def test_store_and_search_experience():
-    client = get_qdrant_client(in_memory=True)
+    client, _ = get_qdrant_client(in_memory=True)
     collection = "test_experiences"
     ensure_collection(client, collection)
 
@@ -86,7 +86,7 @@ async def test_store_and_search_experience():
 
 @pytest.mark.asyncio
 async def test_search_empty_collection():
-    client = get_qdrant_client(in_memory=True)
+    client, _ = get_qdrant_client(in_memory=True)
     collection = "empty_col"
     ensure_collection(client, collection)
 

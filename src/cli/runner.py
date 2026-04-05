@@ -95,8 +95,7 @@ class AgentRunner:
             logger.warning("Redis unavailable, checkpoint & cache disabled")
 
         # ── 5. Qdrant (remote preferred, in-memory fallback) ─────
-        self._qdrant = get_qdrant_client()  # remote first, falls back to in-memory
-        self._qdrant_remote = not getattr(self._qdrant, '_local', True)
+        self._qdrant, self._qdrant_remote = get_qdrant_client()
         collection = self._settings.qdrant.collection_name
         ensure_collection(self._qdrant, collection)
 

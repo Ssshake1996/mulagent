@@ -119,7 +119,7 @@ def _init_resources():
             logger.warning("Database unavailable: %s", e)
 
     # Qdrant
-    qdrant = get_qdrant_client()
+    qdrant, _ = get_qdrant_client()
     collection_name = settings.qdrant.collection_name if settings.qdrant else "case_library"
     ensure_collection(qdrant, collection_name)
 

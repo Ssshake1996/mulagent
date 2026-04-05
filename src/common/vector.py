@@ -29,21 +29,25 @@ logger = logging.getLogger(__name__)
 # ── Qdrant client ────────────────────────────────────────────────
 
 
-def get_qdrant_client(in_memory: bool = False) -> QdrantClient:
-    """Get a Qdrant client. Uses in-memory mode if requested or if remote is unavailable."""
+def get_qdrant_client(in_memory: bool = False) -> tuple[QdrantClient, bool]:
+    """Get a Qdrant client.
+
+    Returns (client, is_remote). Uses in-memory mode if requested or
+    if remote is unavailable.
+    """
     if in_memory:
         logger.info("Using in-memory Qdrant")
-        return QdrantClient(location=":memory:")
+        return QdrantClient(location=":memory:"), False
 
     settings = get_settings()
     try:
         client = QdrantClient(url=settings.qdrant.url, timeout=3, check_compatibility=False)
         client.get_collections()  # connectivity check
         logger.info("Connected to Qdrant at %s", settings.qdrant.url)
-        return client
+        return client, True
     except Exception:
         logger.warning("Qdrant not available at %s, falling back to in-memory", settings.qdrant.url)
-        return QdrantClient(location=":memory:")
+        return QdrantClient(location=":memory:"), False
 
 
 def get_vector_dim() -> int:
