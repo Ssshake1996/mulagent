@@ -31,10 +31,15 @@ from textual.widgets import (
     ListItem,
     ListView,
     OptionList,
+    RichLog,
     Static,
+    TabbedContent,
+    TabPane,
     TextArea,
 )
 from textual.widgets.option_list import Option
+from rich.markdown import Markdown as RichMarkdown
+from rich.text import Text as RichText
 
 
 # ── Command definitions for auto-completion ────────────────────
@@ -189,7 +194,14 @@ class MulAgentApp(App):
     #chat-area {
         width: 1fr;
     }
-    #chat-log {
+    #chat-tabs {
+        height: 1fr;
+    }
+    #chat-log-raw {
+        height: 1fr;
+        padding: 0 1;
+    }
+    #chat-log-rich {
         height: 1fr;
         padding: 0 1;
     }
@@ -240,6 +252,7 @@ class MulAgentApp(App):
         self._busy = False
         self._popup_visible = False
         self._filtered_cmds: list[tuple[str, str]] = []
+        self._messages: list[dict[str, str]] = []  # {"role": ..., "content": ...}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -249,15 +262,24 @@ class MulAgentApp(App):
                 yield ListView(id="session-list")
                 yield Label(f"Model: {self.runner.current_model}", id="model-label")
             with Vertical(id="chat-area"):
-                yield TextArea(
-                    "",
-                    id="chat-log",
-                    read_only=True,
-                    show_line_numbers=False,
-                    soft_wrap=True,
-                    language=None,
-                    theme="css",
-                )
+                with TabbedContent("渲染", "原始", id="chat-tabs"):
+                    with TabPane("渲染", id="tab-rich"):
+                        yield RichLog(
+                            highlight=True,
+                            markup=True,
+                            wrap=True,
+                            id="chat-log-rich",
+                        )
+                    with TabPane("原始", id="tab-raw"):
+                        yield TextArea(
+                            "",
+                            id="chat-log-raw",
+                            read_only=True,
+                            show_line_numbers=False,
+                            soft_wrap=True,
+                            language=None,
+                            theme="css",
+                        )
                 yield Static("", id="progress-bar")
         with Vertical(id="input-wrapper"):
             yield OptionList(id="cmd-popup")
@@ -775,19 +797,32 @@ class MulAgentApp(App):
     # ── Helpers ───────────────────────────────────────────────
 
     def _write_chat(self, role: str, content: str) -> None:
-        chat = self.query_one("#chat-log", TextArea)
+        self._messages.append({"role": role, "content": content})
+        # Write to raw panel
+        raw = self.query_one("#chat-log-raw", TextArea)
         line = f"\n{role}:\n{content}\n"
-        chat.insert(line, chat.document.end)
-        chat.scroll_end(animate=False)
+        raw.insert(line, raw.document.end)
+        raw.scroll_end(animate=False)
+        # Write to rich panel
+        rich_log = self.query_one("#chat-log-rich", RichLog)
+        role_style = "bold cyan" if role == "Assistant" else "bold green"
+        rich_log.write(RichText(f"\n{role}:", style=role_style))
+        rich_log.write(RichMarkdown(content))
 
     def _write_system(self, msg: str) -> None:
-        chat = self.query_one("#chat-log", TextArea)
-        chat.insert(f"\n--- {msg}\n", chat.document.end)
-        chat.scroll_end(animate=False)
+        self._messages.append({"role": "system", "content": msg})
+        # Write to raw panel
+        raw = self.query_one("#chat-log-raw", TextArea)
+        raw.insert(f"\n--- {msg}\n", raw.document.end)
+        raw.scroll_end(animate=False)
+        # Write to rich panel
+        rich_log = self.query_one("#chat-log-rich", RichLog)
+        rich_log.write(RichText(f"--- {msg}", style="dim"))
 
     def _clear_chat(self) -> None:
-        chat = self.query_one("#chat-log", TextArea)
-        chat.clear()
+        self._messages.clear()
+        self.query_one("#chat-log-raw", TextArea).clear()
+        self.query_one("#chat-log-rich", RichLog).clear()
 
     def _update_status(self) -> None:
         try:
