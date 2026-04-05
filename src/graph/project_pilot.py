@@ -78,20 +78,25 @@ OnEventCallback = Callable[[str, ProjectState, dict], Awaitable[Any]]
 _DECOMPOSE_PROMPT = """\
 You are a project planner. Break down the following project into ordered sub-tasks.
 
+IMPORTANT: The user's goal below is your north star. Every sub-task must directly \
+contribute to achieving this goal. Do NOT add tasks that are "nice to have" but \
+don't serve the core objective.
+
 Rules:
 - Each sub-task should be independently executable by an AI agent with tool access.
+- Each sub-task description must clearly state what outcome is expected and how it serves the user's goal.
 - Identify dependencies: which tasks must complete before others can start.
 - Keep the number of tasks reasonable (3-10 for most projects).
 - Return ONLY valid JSON, no explanation.
 
 Format:
 [
-  {"id": "t1", "description": "...", "depends_on": []},
-  {"id": "t2", "description": "...", "depends_on": ["t1"]},
+  {{"id": "t1", "description": "...", "depends_on": []}},
+  {{"id": "t2", "description": "...", "depends_on": ["t1"]}},
   ...
 ]
 
-Project:
+User's Goal:
 {user_input}
 """
 
@@ -205,37 +210,44 @@ def build_subtask_context(
 # ── Review & Re-plan ─────────────────────────────────────────────────
 
 _REVIEW_PROMPT = """\
-You are reviewing a project's progress. Analyze the completed sub-tasks and their results.
+You are reviewing a project's progress. Your ONLY evaluation standard is the user's original goal below.
 
-Original project: {original_input}
+## User's Original Goal (this is your evaluation anchor)
+{original_input}
 
-Completed tasks and results:
+## Completed Tasks and Results
 {completed_summary}
 
-Remaining tasks:
+## Remaining Tasks
 {remaining_summary}
 
-Evaluate:
-1. Score the current progress (1-5): 1=major issues, 3=acceptable, 5=excellent
-2. Are there any completed tasks that need correction?
-3. Do remaining tasks need adjustment based on what was learned?
+## Evaluation Criteria (all measured against the user's original goal)
+1. **Goal alignment** (1-5): Are the completed results actually serving the user's original goal? \
+1=completely off-track, 3=partially aligned, 5=directly advancing the goal.
+2. **Correction needed?**: Do any completed tasks need to be redone because their output \
+diverges from or fails to serve the user's original goal?
+3. **Plan adjustment?**: Based on what we've learned, do remaining tasks need to be modified \
+to better achieve the user's original goal?
+
+IMPORTANT: Do NOT evaluate tasks in isolation. A task that "completed successfully" but \
+produced results irrelevant to the user's goal should score LOW and be flagged for correction.
 
 Return JSON only:
 {{
   "score": 3,
-  "analysis": "brief analysis",
+  "analysis": "brief analysis of how well current progress serves the user's goal",
   "corrections": [
-    {{"task_id": "t1", "action": "redo", "reason": "..."}}
+    {{"task_id": "t1", "action": "redo", "reason": "why this diverges from the user's goal"}}
   ],
   "adjustments": [
-    {{"task_id": "t3", "new_description": "...", "reason": "..."}}
+    {{"task_id": "t3", "new_description": "...", "reason": "how this better serves the goal"}}
   ],
   "new_tasks": [
     {{"id": "t_fix1", "description": "...", "depends_on": ["t1"], "insert_before": "t3"}}
   ]
 }}
 
-If everything looks good, return corrections/adjustments/new_tasks as empty arrays.
+If everything is well-aligned with the user's goal, return corrections/adjustments/new_tasks as empty arrays.
 """
 
 
