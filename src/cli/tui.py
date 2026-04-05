@@ -247,7 +247,12 @@ class MulAgentApp(App):
     #session-list { height: 1fr; overflow-y: auto; }
     #session-list > ListItem {
         padding: 0 1;
+        color: #66aaff;
         text-style: underline;
+    }
+    #session-list > ListItem:hover {
+        background: #222222 !important;
+        color: #88ccff;
     }
     #fav-title {
         text-style: bold;
@@ -263,6 +268,26 @@ class MulAgentApp(App):
     TabbedContent { height: 1fr; }
     TabbedContent ContentSwitcher { height: 1fr; }
     TabPane { height: 1fr; padding: 0; }
+
+    /* ── Tab buttons ── */
+    ContentTab {
+        background: #222222 !important;
+        color: #888888;
+        padding: 0 2;
+        margin: 0 1 0 0;
+        text-style: bold;
+    }
+    ContentTab:hover {
+        background: #333333 !important;
+        color: #cccccc;
+    }
+    ContentTab.-active {
+        background: #4488cc !important;
+        color: #ffffff;
+    }
+    Underline {
+        height: 0;
+    }
     #chat-log-rich { height: 1fr; padding: 0 1; }
     #chat-log-raw { height: 1fr; padding: 0 1; }
 
@@ -1040,9 +1065,10 @@ class MulAgentApp(App):
             for s in sessions:
                 sid = s["session_id"][-8:]
                 turns = s.get("turns", 0)
-                preview = s.get("preview", "")[:16] or "(empty)"
-                marker = "▸" if s["session_id"] == self.session_id else " "
-                lv.append(ListItem(Label(f"{marker}{sid} [{turns}] {preview}")))
+                preview = s.get("preview", "")[:14] or "(empty)"
+                active = s["session_id"] == self.session_id
+                marker = "▸" if active else "○"
+                lv.append(ListItem(Label(f"{marker} {sid} [{turns}] {preview}")))
         except NoMatches:
             pass
 
