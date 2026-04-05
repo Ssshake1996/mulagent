@@ -40,7 +40,7 @@ from common.vector import ensure_collection, get_qdrant_client
 from evolution.trace import record_task_trace
 from gateway.adapter import SessionManager
 from graph.conversation import ConversationStore
-from graph.orchestrator import run_react
+from graph.orchestrator import run_react, run_auto
 
 logger = logging.getLogger("feishu_bot")
 
@@ -554,10 +554,173 @@ class ProgressTracker:
         _lark_client.im.v1.message.patch(req)
 
 
+# ── Project Progress Tracker ─────────────────────────────────────────
+
+# Decision event coordination (mirrors _confirm_events pattern)
+_project_decision_events: dict[str, asyncio.Event] = {}
+_project_decision_results: dict[str, str] = {}
+
+
+class ProjectProgressTracker:
+    """Tracks ProjectPilot progress, renders project-level status card."""
+
+    def __init__(self, status_msg_id: str, task_key: str = ""):
+        self.status_msg_id = status_msg_id
+        self.task_key = task_key
+        self.start = time.monotonic()
+        self.phase = "initializing"
+
+    def _render_card(self, state: Any) -> str:
+        """Render project progress card content."""
+        from graph.project_pilot import ProjectState
+        if not isinstance(state, ProjectState):
+            return f"🔄 **项目执行中** — {self.phase}"
+
+        elapsed = time.monotonic() - self.start
+        lines = [f"📋 **项目进度** — 迭代 {state.iteration}"]
+
+        # Progress bar
+        pct = state.progress_pct()
+        filled = pct // 5
+        bar = "█" * filled + "░" * (20 - filled)
+        lines.append(f"{bar} {pct}% ({state.completed_count()}/{state.total_count()})")
+
+        # Sub-task list
+        icons = {
+            "completed": "✅", "failed": "❌", "pending": "⬜",
+            "running": "🔄", "decision_needed": "❓",
+        }
+        for t in state.subtasks:
+            icon = icons.get(t.status, "⬜")
+            retry_tag = f" _(重试{t.retry_count})_" if t.retry_count > 0 else ""
+            lines.append(f"  {icon} [{t.id}] {t.description[:60]}{retry_tag}")
+
+        # Scores
+        if state.scores:
+            lines.append(f"\n📊 评分: {' → '.join(str(s) for s in state.scores)}")
+
+        lines.append(f"\n⏱ {elapsed:.1f}s | 阶段: {self.phase}")
+        return "\n".join(lines)
+
+    def _build_card_json(self, content: str, with_cancel: bool = True) -> str:
+        """Build card JSON with optional cancel button."""
+        elements: list[dict] = [{"tag": "markdown", "content": content}]
+        if with_cancel and self.task_key:
+            elements.append({
+                "tag": "action",
+                "actions": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "⏹ 取消项目"},
+                    "type": "default",
+                    "value": {"action": "cancel", "task_key": self.task_key},
+                }],
+            })
+        return json.dumps({"elements": elements}, ensure_ascii=False)
+
+    def _patch(self, content: str, with_cancel: bool = True):
+        """Patch the Feishu card."""
+        card_json = self._build_card_json(content, with_cancel)
+        body = PatchMessageRequestBody.builder().content(card_json).build()
+        req = PatchMessageRequest.builder() \
+            .message_id(self.status_msg_id) \
+            .request_body(body) \
+            .build()
+        resp = _lark_client.im.v1.message.patch(req)
+        if not resp.success():
+            logger.error("Project card patch failed: %s", resp.msg)
+
+    async def on_event(self, event_type: str, state: Any, detail: dict):
+        """Callback from ProjectPilot for progress/decision events."""
+        # Check for cancellation
+        cancel_event = _running_tasks.get(self.task_key)
+        if cancel_event and cancel_event.is_set():
+            raise asyncio.CancelledError("Project cancelled by user")
+
+        self.phase = detail.get("phase", event_type)
+
+        if event_type == "project_decision":
+            return await self._handle_decision(state)
+
+        self._patch(self._render_card(state))
+        return None
+
+    async def _handle_decision(self, state: Any) -> str | None:
+        """Show decision card and wait for user response."""
+        from graph.project_pilot import ProjectState
+        if not isinstance(state, ProjectState):
+            return None
+
+        # Find the task needing decision
+        decision_task = next(
+            (t for t in state.subtasks if t.status == "decision_needed"), None
+        )
+        if not decision_task or not decision_task.decision_prompt:
+            return None
+
+        decision_id = f"proj_{self.task_key}_{time.monotonic():.0f}"
+        event = asyncio.Event()
+        _project_decision_events[decision_id] = event
+
+        # Build decision card
+        question = decision_task.decision_prompt[:500]
+        elements = [
+            {"tag": "markdown", "content": (
+                f"❓ **需要您的决策**\n\n"
+                f"任务 [{decision_task.id}]: {decision_task.description[:100]}\n\n"
+                f"**问题**: {question}\n\n"
+                f"请输入您的决定（或点击按钮）："
+            )},
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "✅ 继续执行"},
+                        "type": "primary",
+                        "value": {
+                            "action": "project_decision",
+                            "decision_id": decision_id,
+                            "response": "继续，按你的判断执行",
+                        },
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "⏭ 跳过此任务"},
+                        "type": "default",
+                        "value": {
+                            "action": "project_decision",
+                            "decision_id": decision_id,
+                            "response": "跳过此任务",
+                        },
+                    },
+                ],
+            },
+        ]
+        card_json = json.dumps({"elements": elements}, ensure_ascii=False)
+        body = PatchMessageRequestBody.builder().content(card_json).build()
+        req = PatchMessageRequest.builder() \
+            .message_id(self.status_msg_id) \
+            .request_body(body) \
+            .build()
+        _lark_client.im.v1.message.patch(req)
+
+        # Wait for user response (timeout 300s for project decisions)
+        try:
+            await asyncio.wait_for(event.wait(), timeout=300)
+            response = _project_decision_results.pop(decision_id, "继续执行")
+        except asyncio.TimeoutError:
+            response = "继续，按你的判断执行"
+            self._patch("⏰ **决策超时** (300s)，自动继续执行...")
+        finally:
+            _project_decision_events.pop(decision_id, None)
+
+        return response
+
+
 # ── Streaming task execution ─────────────────────────────────────────
 
 async def _run_task_react(user_input: str, session_id: str, tracker: ProgressTracker):
-    """Execute task using the ReAct orchestrator with progress callbacks.
+    """Execute task using run_auto (routes to ReAct or ProjectPilot).
 
     Loads conversation history and accumulated directives from the session
     to enable multi-turn dialogue.
@@ -580,11 +743,18 @@ async def _run_task_react(user_input: str, session_id: str, tracker: ProgressTra
         session_directives = conv.get_directives(session_id) or None
         conv.append_turn(session_id, "user", user_input)
 
-    result = await run_react(
+    # Create project progress tracker (used only if routed to ProjectPilot)
+    proj_tracker = ProjectProgressTracker(
+        status_msg_id=tracker.status_msg_id, task_key=tracker.task_key,
+    )
+
+    result = await run_auto(
         user_input=user_input,
         on_progress=tracker.on_progress,
+        on_event=proj_tracker.on_event,
         conversation_history=history,
         session_directives=session_directives,
+        session_id=session_id,
         **_react_params,  # includes timeout from config
     )
 
@@ -1297,6 +1467,18 @@ def _on_card_action(data):
                 logger.info("Confirm %s by user %s: confirm_id=%s", emoji, user_id, confirm_id)
                 return _make_toast("info", f"{emoji} {'已确认执行' if approved else '已拒绝'}")
             return _make_toast("info", "确认请求已过期")
+
+        if action_type == "project_decision":
+            # ── Project decision response ──
+            decision_id = value.get("decision_id", "")
+            response = value.get("response", "继续执行")
+            event = _project_decision_events.get(decision_id)
+            if event:
+                _project_decision_results[decision_id] = response
+                event.set()
+                logger.info("Project decision by user %s: %s", user_id, response[:50])
+                return _make_toast("info", f"✅ 已收到决策")
+            return _make_toast("info", "决策请求已过期")
 
         if action_type == "retry":
             # ── Retry failed task ──

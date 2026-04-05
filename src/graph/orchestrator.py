@@ -1,7 +1,8 @@
-"""Main orchestrator: ReAct-based task execution.
+"""Main orchestrator: ReAct-based task execution + ProjectPilot routing.
 
-Single entry point for all task processing. The LLM decides what tools
-to call in a reasoning loop — no intent classification or DAG planning needed.
+Single entry point for all task processing. Small tasks go through the
+ReAct loop directly; large multi-step projects are routed to ProjectPilot
+(iterative DAG with feedback loop).
 """
 
 from __future__ import annotations
@@ -163,3 +164,176 @@ async def _self_evaluate(
         logger.debug("Self-evaluation parse failed: %s", e)
 
     return None
+
+
+# ── Task Mode Classification ────────────────────────────────────────
+
+_PROJECT_SIGNALS_ZH = [
+    "项目", "方案", "工程", "系统设计", "架构设计", "整体规划",
+    "分阶段", "多步骤", "分步", "第一步", "第二步",
+    "全面", "完整方案", "端到端",
+]
+_PROJECT_SIGNALS_EN = [
+    "project", "plan", "phase", "multi-step", "end-to-end",
+    "step 1", "step 2", "comprehensive", "full plan",
+    "architecture", "system design", "roadmap",
+]
+
+
+def _classify_task_mode(user_input: str) -> str:
+    """Classify whether user_input is a single task or a multi-step project.
+
+    Uses keyword heuristics — no LLM call needed.
+    Returns 'project' or 'single'.
+    """
+    text = user_input.lower()
+    signal_count = 0
+
+    for kw in _PROJECT_SIGNALS_ZH + _PROJECT_SIGNALS_EN:
+        if kw in text:
+            signal_count += 1
+
+    # Detect numbered lists (1. xxx  2. xxx) as project signals
+    import re
+    numbered_items = re.findall(r'(?:^|\n)\s*\d+[.、)\s]', user_input)
+    if len(numbered_items) >= 3:
+        signal_count += 2
+
+    # Long inputs with multiple lines are more likely projects
+    line_count = len(user_input.strip().split("\n"))
+    if line_count >= 8:
+        signal_count += 1
+
+    if signal_count >= 2:
+        logger.info("Task classified as 'project' (signal_count=%d)", signal_count)
+        return "project"
+
+    return "single"
+
+
+# ── ProjectPilot Entry Point ────────────────────────────────────────
+
+async def run_project_pilot(
+    user_input: str,
+    llm: Any = None,
+    qdrant: Any = None,
+    collection_name: str = "case_library",
+    on_progress: Any = None,
+    on_event: Any = None,
+    timeout: int = 0,
+    conversation_history: str = "",
+    session_directives: list[str] | None = None,
+    session_id: str = "",
+) -> dict[str, Any]:
+    """Run a task using ProjectPilot (iterative DAG orchestrator).
+
+    Returns a result dict matching the run_react() format.
+    """
+    if llm is None:
+        return {
+            "final_output": "Error: no LLM configured",
+            "status": "failed",
+            "intent": "project",
+            "error": "no_llm",
+        }
+
+    from common.config import get_settings
+    from graph.project_pilot import run_project, format_project_result
+
+    cfg = get_settings().project_pilot
+    effective_timeout = timeout or cfg.project_timeout
+
+    react_params = {
+        "llm": llm,
+        "qdrant": qdrant,
+        "collection_name": collection_name,
+    }
+
+    try:
+        state = await asyncio.wait_for(
+            run_project(
+                user_input=user_input,
+                llm=llm,
+                on_event=on_event,
+                session_id=session_id,
+                **react_params,
+            ),
+            timeout=effective_timeout,
+        )
+
+        output = format_project_result(state)
+
+        return {
+            "final_output": output,
+            "status": state.status,
+            "intent": "project",
+            "project_id": state.project_id,
+            "iteration": state.iteration,
+            "scores": state.scores,
+            "subtask_count": state.total_count(),
+            "completed_count": state.completed_count(),
+        }
+
+    except asyncio.TimeoutError:
+        logger.error("ProjectPilot timed out after %ds", effective_timeout)
+        return {
+            "final_output": f"项目执行超时（{effective_timeout}s）。请简化任务或增加超时配置。",
+            "status": "failed",
+            "intent": "project",
+            "error": "timeout",
+        }
+    except Exception as e:
+        logger.exception("ProjectPilot failed")
+        return {
+            "final_output": f"项目执行失败: {e}",
+            "status": "failed",
+            "intent": "project",
+            "error": str(e),
+        }
+
+
+# ── Unified Entry Point ─────────────────────────────────────────────
+
+async def run_auto(
+    user_input: str,
+    llm: Any = None,
+    qdrant: Any = None,
+    collection_name: str = "case_library",
+    on_progress: Any = None,
+    on_event: Any = None,
+    timeout: int = 0,
+    conversation_history: str = "",
+    session_directives: list[str] | None = None,
+    session_id: str = "",
+) -> dict[str, Any]:
+    """Unified entry point: classify task mode and route accordingly.
+
+    'single' tasks → run_react() (existing path)
+    'project' tasks → run_project_pilot() (iterative DAG)
+    """
+    mode = _classify_task_mode(user_input)
+
+    if mode == "project":
+        return await run_project_pilot(
+            user_input=user_input,
+            llm=llm,
+            qdrant=qdrant,
+            collection_name=collection_name,
+            on_progress=on_progress,
+            on_event=on_event,
+            timeout=timeout,
+            conversation_history=conversation_history,
+            session_directives=session_directives,
+            session_id=session_id,
+        )
+
+    return await run_react(
+        user_input=user_input,
+        llm=llm,
+        qdrant=qdrant,
+        collection_name=collection_name,
+        on_progress=on_progress,
+        timeout=timeout,
+        conversation_history=conversation_history,
+        session_directives=session_directives,
+    )

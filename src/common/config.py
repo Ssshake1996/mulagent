@@ -247,6 +247,15 @@ class CompressSettings(BaseSettings):
     decay_half_life_hours: float = 24.0    # 时间衰减半衰期（小时）
 
 
+class ProjectPilotSettings(BaseSettings):
+    """ProjectPilot iterative DAG orchestrator configuration."""
+    max_iterations: int = 3            # 最大迭代轮次（Plan→Execute→Review 循环）
+    max_subtask_retries: int = 2       # 单个子任务最多重做次数
+    convergence_threshold: int = 2     # 连续 N 轮评分无提升则停止
+    project_timeout: int = 1800        # 项目总超时（秒）
+    max_parallel_subtasks: int = 3     # 最大并行子任务数
+
+
 class ReactSettings(BaseSettings):
     """ReAct orchestrator configuration."""
     max_rounds: int = 30           # 最大推理轮数（复杂任务需要更多轮）
@@ -293,6 +302,7 @@ class Settings(BaseSettings):
     feishu: FeishuSettings = Field(default_factory=FeishuSettings)
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     react: ReactSettings = Field(default_factory=ReactSettings)
+    project_pilot: ProjectPilotSettings = Field(default_factory=ProjectPilotSettings)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
@@ -330,6 +340,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
         feishu=FeishuSettings(**raw.get("feishu", {})),
         embedding=EmbeddingSettings(**raw.get("embedding", {})),
         react=ReactSettings(**raw.get("react", {})),
+        project_pilot=ProjectPilotSettings(**raw.get("project_pilot", {})),
         sandbox=SandboxSettings(**raw.get("sandbox", {})),
         security=SecuritySettings(**raw.get("security", {})),
         observability=ObservabilitySettings(**raw.get("observability", {})),

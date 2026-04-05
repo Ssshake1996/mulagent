@@ -91,6 +91,13 @@ feishu:
   app_secret: ""           # 飞书应用 App Secret
   autostart: false         # 是否开机自启（true 时 enable systemd 服务）
 
+project_pilot:
+  max_iterations: 3            # 最大迭代轮次（Plan→Execute→Review 循环）
+  max_subtask_retries: 2       # 单个子任务最多重做次数
+  convergence_threshold: 2     # 连续 N 轮评分无提升则停止
+  project_timeout: 1800        # 项目总超时（秒）
+  max_parallel_subtasks: 3     # 最大并行子任务数
+
 sandbox:
   enabled: true                # 启用 Docker 沙箱（不可用时自动降级为直接执行）
   image: "python:3.12-slim"    # 沙箱镜像

@@ -9,13 +9,26 @@
 ```
              ┌─── 飞书 Bot (WebSocket) ───┐
              │                             │
-用户 ────────┼─── CLI TUI / Headless ─────┼──→ SessionManager ──→ run_react()
+用户 ────────┼─── CLI TUI / Headless ─────┼──→ SessionManager ──→ run_auto()
              │                             │          │
              └─── HTTP API (FastAPI) ─────┘          ▼
                                               ┌─────────────┐
-                                              │  ReAct Loop  │  ← 核心推理循环
-                                              │  (LLM 决策)  │
+                                              │ _classify()  │  ← 自动分类
                                               └──────┬───────┘
+                                           single/   \project
+                                              ▼        ▼
+                                      ┌──────────┐  ┌──────────────┐
+                                      │ ReAct    │  │ ProjectPilot │
+                                      │ Loop     │  │ 迭代式 DAG    │
+                                      │(LLM决策) │  │ Plan→Exec→   │
+                                      └──────┬───┘  │ Review→Replan│
+                                             │      └──────┬───────┘
+                                             │             │ 子任务
+                                             │             ▼
+                                             │      ┌──────────┐
+                                             │      │ ReAct    │
+                                             │      │ Loop×N   │
+                                             │      └──────┬───┘
                                                      │ 工具调用
                                     ┌────────────────┼────────────────┐
                                     ▼                ▼                 ▼
@@ -32,7 +45,8 @@
 ```
 
 **核心设计**：
-- LLM 在推理循环中自主决定调用什么工具，无需意图分类或 DAG 规划
+- 单任务：LLM 在推理循环中自主决定调用什么工具
+- 大项目：ProjectPilot 迭代式 DAG，子任务复用 ReAct Loop 执行
 - 多通道共享同一个 `SessionManager`，会话数据互通（文件级 JSON 存储）
 
 ---
@@ -659,7 +673,38 @@ metadata:
 
 ## 12. 变更日志
 
-### v0.17.0 — System Prompt 动态化（当前）
+### v0.18.0 — ProjectPilot 大项目支持（当前）
+
+新增 ProjectPilot 引擎，支持大型多步骤项目的自动拆解、迭代执行和自我纠正：
+
+- **迭代式 DAG 引擎**（`src/graph/project_pilot.py`）：
+  - 执行模型：Plan → Execute → Review → Re-plan → Execute → ...
+  - LLM 自动将大任务拆解为带依赖关系的子任务 DAG
+  - 独立子任务通过 `asyncio.gather` 并行执行，复用现有 `run_react()`
+  - 每批子任务完成后 LLM 审查打分，可插入修正任务、调整后续计划或回退重做
+- **三道收敛防线**（防止无限循环）：
+  - 最大迭代轮次（`max_iterations`，默认 3，可配置）：到达上限强制结束
+  - 收敛检测：连续 N 轮评分无提升 → 已达能力极限，停止迭代
+  - 降级到用户决策：子任务重做超过 `max_subtask_retries` 次 → 推送决策卡片给用户
+- **自动分类路由**（`src/graph/orchestrator.py`）：
+  - `run_auto()` 统一入口，关键词启发式分类（不消耗 LLM 调用）
+  - 单任务 → 原有 `run_react()` 路径不变
+  - 多步骤项目 → ProjectPilot 迭代 DAG
+- **飞书项目级进度卡片**（`src/gateway/feishu_bot.py`）：
+  - `ProjectProgressTracker`：实时展示所有子任务状态 + 迭代轮次 + 进度条
+  - 决策点交互卡片：子任务需要用户决策时推送按钮卡片，支持「继续执行」「跳过」
+  - 决策超时（300s）自动继续
+- **可配置项**（`project_pilot` 配置段）：
+  - `max_iterations`: 最大迭代轮次（默认 3）
+  - `max_subtask_retries`: 单个子任务最多重做次数（默认 2）
+  - `convergence_threshold`: 连续无提升轮次阈值（默认 2）
+  - `project_timeout`: 项目总超时（默认 1800s）
+  - `max_parallel_subtasks`: 最大并行子任务数（默认 3）
+- **项目 Checkpoint**：
+  - Redis 持久化（key 前缀 `project:`，TTL 24h）
+  - 支持中断后恢复：`resume_project()` 从断点继续执行
+
+### v0.17.0 — System Prompt 动态化
 
 对标 Claude Code 动态 system prompt 机制，6 项架构优化：
 
