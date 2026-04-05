@@ -1,18 +1,17 @@
 """Textual-based TUI for mul-agent.
 
-Rich terminal interface with:
-- Chat panel with text selection and copy (Ctrl+C)
-- Real-time tool progress display
-- Session sidebar
-- Model selector
-- Context management (/modify)
-- Command auto-completion (type / to see all commands)
-- Keyboard shortcuts
+Three-panel layout:
+- Left: Sessions + Favorite prompts
+- Center: Main chat (Rendered / Raw tabs)
+- Right: Activity panel (task progress, tool calls, warnings)
+
+Top status bar, bottom input with shortcuts.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -20,7 +19,7 @@ from typing import Any
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import (
@@ -42,6 +41,22 @@ from rich.markdown import Markdown as RichMarkdown
 from rich.text import Text as RichText
 
 
+# ── Favorites persistence ────────────────────────────────────
+_FAV_FILE = Path.home() / ".mulagent" / "favorites.json"
+
+
+def _load_favorites() -> list[str]:
+    try:
+        return json.loads(_FAV_FILE.read_text()) if _FAV_FILE.exists() else []
+    except Exception:
+        return []
+
+
+def _save_favorites(favs: list[str]) -> None:
+    _FAV_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _FAV_FILE.write_text(json.dumps(favs, ensure_ascii=False, indent=2))
+
+
 # ── Command definitions for auto-completion ────────────────────
 COMMANDS: list[tuple[str, str]] = [
     ("/new", "Start a new session"),
@@ -49,6 +64,9 @@ COMMANDS: list[tuple[str, str]] = [
     ("/sessions", "List recent sessions"),
     ("/resume", "Resume a session by ID fragment"),
     ("/model", "Show or switch LLM model"),
+    ("/fav", "List favorite prompts"),
+    ("/fav add", "Save current input as favorite"),
+    ("/fav del", "Remove a favorite by index"),
     ("/modify list", "Show all context turns"),
     ("/modify view", "View a turn's full content"),
     ("/modify edit", "Edit a turn (Ctrl+S save, Esc cancel)"),
@@ -80,36 +98,18 @@ class EditScreen(ModalScreen[str | None]):
     """Modal editor for a conversation turn. Ctrl+S saves, Esc cancels."""
 
     CSS = """
-    EditScreen {
-        align: center middle;
-    }
+    EditScreen { align: center middle; }
     #edit-container {
-        width: 90%;
-        height: 80%;
-        border: thick $accent;
-        background: $surface;
-        padding: 1 2;
+        width: 90%; height: 80%;
+        border: thick $accent; background: $surface; padding: 1 2;
     }
-    #edit-title {
-        text-style: bold;
-        padding: 0 0 1 0;
-    }
-    #edit-area {
-        height: 1fr;
-    }
-    #edit-toolbar {
-        height: 3;
-        padding: 1 0 0 0;
-    }
-    .edit-btn {
-        margin: 0 2 0 0;
-    }
+    #edit-title { text-style: bold; padding: 0 0 1 0; }
+    #edit-area { height: 1fr; }
+    #edit-toolbar { height: 3; padding: 1 0 0 0; }
+    .edit-btn { margin: 0 2 0 0; }
     #edit-hint {
-        height: 1;
-        color: $text;
-        background: $primary;
-        padding: 0 2;
-        text-style: bold;
+        height: 1; color: $text; background: $primary;
+        padding: 0 2; text-style: bold;
     }
     """
 
@@ -127,24 +127,14 @@ class EditScreen(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         from textual.widgets import Button
         with Vertical(id="edit-container"):
-            yield Label(
-                f"Editing turn [{self._index}] ({self._role})",
-                id="edit-title",
-            )
+            yield Label(f"Editing turn [{self._index}] ({self._role})", id="edit-title")
             yield TextArea(
-                self._content,
-                id="edit-area",
-                soft_wrap=True,
-                show_line_numbers=True,
-                language=None,
-                theme="css",
+                self._content, id="edit-area",
+                soft_wrap=True, show_line_numbers=True, language=None, theme="css",
             )
-            yield Label(
-                " Ctrl+S = Save and close  |  Esc = Cancel without saving ",
-                id="edit-hint",
-            )
+            yield Label(" Ctrl+S = Save  |  Esc = Cancel ", id="edit-hint")
             with Horizontal(id="edit-toolbar"):
-                yield Button("💾 Save (Ctrl+S)", variant="success", id="btn-save", classes="edit-btn")
+                yield Button("Save (Ctrl+S)", variant="success", id="btn-save", classes="edit-btn")
                 yield Button("Cancel (Esc)", variant="default", id="btn-cancel", classes="edit-btn")
 
     def on_mount(self) -> None:
@@ -157,8 +147,53 @@ class EditScreen(ModalScreen[str | None]):
             self.action_cancel()
 
     def action_save(self) -> None:
-        text = self.query_one("#edit-area", TextArea).text
-        self.dismiss(text)
+        self.dismiss(self.query_one("#edit-area", TextArea).text)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+# ── Command Palette ModalScreen ──────────────────────────────────
+
+class CommandPalette(ModalScreen[str | None]):
+    """VS Code-style command palette: search and select commands."""
+
+    CSS = """
+    CommandPalette { align: center middle; }
+    #palette-container {
+        width: 60; height: 24;
+        border: thick $accent; background: $surface; padding: 1 2;
+    }
+    #palette-input { margin: 0 0 1 0; }
+    #palette-list { height: 1fr; }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Close")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="palette-container"):
+            yield Input(placeholder="Search commands...", id="palette-input")
+            yield OptionList(id="palette-list")
+
+    def on_mount(self) -> None:
+        self._refresh_list("")
+        self.query_one("#palette-input", Input).focus()
+
+    @on(Input.Changed, "#palette-input")
+    def _on_filter(self, event: Input.Changed) -> None:
+        self._refresh_list(event.value)
+
+    def _refresh_list(self, query: str) -> None:
+        ol = self.query_one("#palette-list", OptionList)
+        ol.clear_options()
+        q = query.lower()
+        for cmd, desc in COMMANDS:
+            if not q or q in cmd or q in desc.lower():
+                ol.add_option(Option(f"{cmd}  — {desc}", id=cmd))
+
+    @on(OptionList.OptionSelected, "#palette-list")
+    def _on_select(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(str(event.option.id))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -167,87 +202,91 @@ class EditScreen(ModalScreen[str | None]):
 # ── TUI App ──────────────────────────────────────────────────────
 
 class MulAgentApp(App):
-    """mul-agent Terminal UI."""
+    """mul-agent Terminal UI — three-panel layout."""
 
     TITLE = "mul-agent"
     CSS = """
-    #main {
-        height: 1fr;
-    }
-    #sidebar {
-        width: 32;
-        border-right: solid $primary-background;
-        padding: 0 1;
-    }
-    #sidebar-title {
-        text-style: bold;
-        padding: 1 0;
+    /* ── Top bar ── */
+    #top-bar {
+        height: 1;
+        background: $primary;
         color: $text;
+        padding: 0 2;
+        text-style: bold;
+    }
+
+    /* ── Main three-column layout ── */
+    #main { height: 1fr; }
+
+    #left-panel {
+        width: 24;
+        border-right: solid $primary-background;
+        padding: 0;
+    }
+    #left-panel-title {
+        text-style: bold;
+        padding: 0 1;
+        color: $accent;
+        background: $surface;
     }
     #session-list {
         height: 1fr;
         overflow-y: auto;
     }
-    #session-list > ListItem {
-        height: auto;
+    #session-list > ListItem { padding: 0 1; }
+    #fav-title {
+        text-style: bold;
         padding: 0 1;
+        color: $accent;
+        background: $surface;
+        border-top: solid $primary-background;
     }
-    #session-list > ListItem:hover {
-        background: $accent 20%;
+    #fav-list {
+        height: auto;
+        max-height: 10;
+        overflow-y: auto;
     }
-    #model-label {
-        padding: 1 0 0 0;
-        color: $text-muted;
-    }
-    #chat-area {
-        width: 1fr;
-    }
-    #chat-tabs {
-        height: 1fr;
-    }
-    /* Ensure both tab labels are always visible */
-    TabbedContent ContentSwitcher {
-        height: 1fr;
-    }
-    TabPane {
-        height: 1fr;
+    #fav-list > ListItem { padding: 0 1; }
+
+    #center-panel { width: 1fr; }
+    TabbedContent { height: 1fr; }
+    TabbedContent ContentSwitcher { height: 1fr; }
+    TabPane { height: 1fr; padding: 0; }
+    #chat-log-rich { height: 1fr; padding: 0 1; }
+    #chat-log-raw { height: 1fr; padding: 0 1; }
+
+    #right-panel {
+        width: 28;
+        border-left: solid $primary-background;
         padding: 0;
     }
-    #chat-log-raw {
-        height: 1fr;
+    .panel-section-title {
+        text-style: bold;
         padding: 0 1;
+        color: $accent;
+        background: $surface;
     }
-    #chat-log-rich {
+    #activity-log {
         height: 1fr;
         padding: 0 1;
     }
     #progress-bar {
-        height: auto;
-        max-height: 8;
+        height: 1;
         padding: 0 1;
         color: $warning;
     }
-    #input-wrapper {
-        dock: bottom;
-        height: auto;
-    }
+
+    /* ── Bottom bar ── */
+    #input-wrapper { dock: bottom; height: auto; }
     #cmd-popup {
         display: none;
-        height: auto;
-        max-height: 14;
+        height: auto; max-height: 14;
         padding: 0 1;
-        background: $surface;
-        border: solid $accent;
-        margin: 0 1;
+        background: $surface; border: solid $accent; margin: 0 1;
     }
-    #cmd-popup.visible {
-        display: block;
-    }
-    #input-bar {
-        padding: 0 1;
-    }
-    #status {
-        dock: bottom;
+    #cmd-popup.visible { display: block; }
+    #input-bar { padding: 0 1; }
+    #shortcut-bar {
         height: 1;
         padding: 0 1;
         color: $text-muted;
@@ -256,8 +295,11 @@ class MulAgentApp(App):
     """
 
     BINDINGS = [
-        Binding("ctrl+n", "new_session", "New Session"),
+        Binding("ctrl+n", "new_session", "New"),
         Binding("ctrl+q", "quit", "Quit"),
+        Binding("ctrl+p", "command_palette", "Commands"),
+        Binding("ctrl+l", "clear_display", "Clear"),
+        Binding("ctrl+f", "add_favorite", "Fav"),
         Binding("escape", "focus_input", "Focus Input", show=False),
     ]
 
@@ -268,88 +310,136 @@ class MulAgentApp(App):
         self._busy = False
         self._popup_visible = False
         self._filtered_cmds: list[tuple[str, str]] = []
-        self._messages: list[dict[str, str]] = []  # {"role": ..., "content": ...}
-        self._input_history: list[str] = []         # command/message history
-        self._history_index: int = -1               # -1 = not browsing history
-        self._history_draft: str = ""               # save draft when browsing
-        self._sessions_cache: list[dict] = []       # cached session list for click-to-resume
+        self._messages: list[dict[str, str]] = []
+        self._input_history: list[str] = []
+        self._history_index: int = -1
+        self._history_draft: str = ""
+        self._sessions_cache: list[dict] = []
+        self._favorites: list[str] = _load_favorites()
+        self._task_start: float = 0.0
+        self._last_latency: float = 0.0
+        self._last_tokens: str = ""
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        # ── Top status bar ──
+        yield Static(self._render_top_bar(), id="top-bar")
+
+        # ── Three-column main area ──
         with Horizontal(id="main"):
-            with Vertical(id="sidebar"):
-                yield Label("Sessions", id="sidebar-title")
+            # Left: sessions + favorites
+            with Vertical(id="left-panel"):
+                yield Label("SESSIONS", id="left-panel-title")
                 yield ListView(id="session-list")
-                yield Label(f"Model: {self.runner.current_model}", id="model-label")
-            with Vertical(id="chat-area"):
+                yield Label("FAVORITES", id="fav-title")
+                yield ListView(id="fav-list")
+
+            # Center: chat with tabs
+            with Vertical(id="center-panel"):
                 with TabbedContent("渲染", "原始", id="chat-tabs"):
                     with TabPane("渲染", id="tab-rich"):
-                        yield RichLog(
-                            highlight=True,
-                            markup=True,
-                            wrap=True,
-                            id="chat-log-rich",
-                        )
+                        yield RichLog(highlight=True, markup=True, wrap=True, id="chat-log-rich")
                     with TabPane("原始", id="tab-raw"):
                         yield TextArea(
-                            "",
-                            id="chat-log-raw",
-                            read_only=True,
-                            show_line_numbers=False,
-                            soft_wrap=True,
-                            language=None,
-                            theme="css",
+                            "", id="chat-log-raw", read_only=True,
+                            show_line_numbers=False, soft_wrap=True, language=None, theme="css",
                         )
+
+            # Right: activity panel
+            with Vertical(id="right-panel"):
+                yield Label("ACTIVITY", classes="panel-section-title")
+                yield RichLog(highlight=True, markup=True, wrap=True, id="activity-log")
                 yield Static("", id="progress-bar")
+
+        # ── Bottom: input + shortcuts ──
         with Vertical(id="input-wrapper"):
             yield OptionList(id="cmd-popup")
             yield Input(
-                placeholder="Type / for commands, or enter a message... (Ctrl+N: new, Ctrl+Q: quit)",
+                placeholder="Enter message or / for commands...",
                 id="input-bar",
             )
-        yield Static("", id="status")
-        yield Footer()
+        yield Static(
+            " Ctrl+N New  Ctrl+P Commands  Ctrl+L Clear  Ctrl+F Fav  ↑↓ History  Tab Complete  Ctrl+Q Quit",
+            id="shortcut-bar",
+        )
 
     def on_mount(self) -> None:
         self._refresh_sessions()
-        self._update_status()
+        self._refresh_favorites()
+        self._update_top_bar()
         self.query_one("#input-bar", Input).focus()
 
-    # ── Session list: click or Enter to resume ──────────────────
+    # ── Top bar ──────────────────────────────────────────────
+
+    def _render_top_bar(self) -> str:
+        sid = self.session_id[-8:] if self.session_id else "none"
+        model = getattr(self.runner, "current_model", "?")
+        latency = f"⏱ {self._last_latency:.1f}s" if self._last_latency else ""
+        tokens = self._last_tokens
+        parts = [f"mul-agent", f"session: {sid}", model]
+        if latency:
+            parts.append(latency)
+        if tokens:
+            parts.append(tokens)
+        if self._busy:
+            parts.append("🔄 running")
+        return " │ ".join(parts)
+
+    def _update_top_bar(self) -> None:
+        try:
+            self.query_one("#top-bar", Static).update(self._render_top_bar())
+        except NoMatches:
+            pass
+
+    # ── Session list: click or Enter to resume ────────────────
 
     @on(ListView.Selected, "#session-list")
     def _on_session_selected(self, event: ListView.Selected) -> None:
-        """Resume a session when selected from the sidebar."""
         idx = event.list_view.index
         if idx is not None and 0 <= idx < len(self._sessions_cache):
             session = self._sessions_cache[idx]
             self.session_id = session["session_id"]
-            self.runner.session_manager.resume_session(
-                "cli_user", "cli", self.session_id
-            )
+            self.runner.session_manager.resume_session("cli_user", "cli", self.session_id)
             self._clear_chat()
             self._load_session_history()
             self._refresh_sessions()
-            self._update_status()
+            self._update_top_bar()
             self.query_one("#input-bar", Input).focus()
 
     def _load_session_history(self) -> None:
-        """Load and display conversation history for the current session."""
         conv_store = self.runner.session_manager.conv_store
         turns = conv_store.list_turns(self.session_id)
         if not turns:
-            self._write_system(f"Resumed: {self.session_id[-16:]} (no history)")
+            self._write_system(f"Resumed: {self.session_id[-16:]} (empty)")
             return
         for t in turns:
             role = "You" if t["role"] == "user" else "Assistant"
             self._write_chat(role, t["content"])
-        self._write_system(f"Resumed: {self.session_id[-16:]} ({len(turns)} turns loaded)")
+        self._write_system(f"Resumed: {self.session_id[-16:]} ({len(turns)} turns)")
+
+    # ── Favorites: click to send ──────────────────────────────
+
+    @on(ListView.Selected, "#fav-list")
+    def _on_fav_selected(self, event: ListView.Selected) -> None:
+        idx = event.list_view.index
+        if idx is not None and 0 <= idx < len(self._favorites):
+            inp = self.query_one("#input-bar", Input)
+            inp.value = self._favorites[idx]
+            inp.cursor_position = len(inp.value)
+            inp.focus()
+
+    def _refresh_favorites(self) -> None:
+        try:
+            lv = self.query_one("#fav-list", ListView)
+            lv.clear()
+            for i, fav in enumerate(self._favorites):
+                lv.append(ListItem(Label(f"📌 {fav[:22]}")))
+        except NoMatches:
+            pass
 
     # ── Command auto-completion ────────────────────────────────
 
     @on(Input.Changed, "#input-bar")
     def _on_input_changed(self, event: Input.Changed) -> None:
-        """Show/hide command popup as user types."""
         text = event.value
         if text.startswith("/"):
             query = text.lower()
@@ -365,34 +455,28 @@ class MulAgentApp(App):
             self._hide_popup()
 
     def _show_popup(self, items: list[tuple[str, str]]) -> None:
-        """Display the command completion popup."""
         popup = self.query_one("#cmd-popup", OptionList)
         popup.clear_options()
         for cmd, desc in items:
             popup.add_option(Option(f"{cmd}  — {desc}", id=cmd))
         popup.add_class("visible")
         self._popup_visible = True
-        # Highlight first item
         if len(items) > 0:
             popup.highlighted = 0
 
     def _hide_popup(self) -> None:
-        """Hide the command completion popup."""
         popup = self.query_one("#cmd-popup", OptionList)
         popup.remove_class("visible")
         self._popup_visible = False
 
     def _accept_completion(self) -> None:
-        """Accept the currently highlighted completion."""
         popup = self.query_one("#cmd-popup", OptionList)
         idx = popup.highlighted
         if idx is not None and 0 <= idx < len(self._filtered_cmds):
             cmd, _desc = self._filtered_cmds[idx]
             inp = self.query_one("#input-bar", Input)
-            # Set the input to the completed command
-            # Add trailing space for commands that take arguments
             needs_arg = cmd in (
-                "/resume", "/model",
+                "/resume", "/model", "/fav add", "/fav del",
                 "/modify view", "/modify edit", "/modify del",
                 "/directives add", "/directives del",
             )
@@ -403,18 +487,16 @@ class MulAgentApp(App):
 
     @on(OptionList.OptionSelected, "#cmd-popup")
     def _on_popup_selected(self, event: OptionList.OptionSelected) -> None:
-        """Handle click/enter selection in the popup."""
         self._accept_completion()
 
+    # ── Key handling (popup + history) ────────────────────────
+
     def on_key(self, event) -> None:
-        """Intercept arrow keys and Tab/Enter for popup and history navigation."""
-        # ── Popup navigation (command auto-complete) ──
+        # ── Popup navigation ──
         if self._popup_visible:
             popup = self.query_one("#cmd-popup", OptionList)
-
             if event.key == "down":
-                event.prevent_default()
-                event.stop()
+                event.prevent_default(); event.stop()
                 h = popup.highlighted
                 if h is None:
                     popup.highlighted = 0
@@ -422,32 +504,31 @@ class MulAgentApp(App):
                     popup.highlighted = h + 1
                 return
             elif event.key == "up":
-                event.prevent_default()
-                event.stop()
+                event.prevent_default(); event.stop()
                 h = popup.highlighted
                 if h is not None and h > 0:
                     popup.highlighted = h - 1
                 return
             elif event.key == "tab":
-                event.prevent_default()
-                event.stop()
+                event.prevent_default(); event.stop()
                 self._accept_completion()
                 return
             elif event.key == "escape":
-                event.prevent_default()
-                event.stop()
+                event.prevent_default(); event.stop()
                 self._hide_popup()
                 self.query_one("#input-bar", Input).focus()
                 return
 
-        # ── Input history navigation (up/down arrows) ──
-        inp = self.query_one("#input-bar", Input)
+        # ── Input history ──
+        try:
+            inp = self.query_one("#input-bar", Input)
+        except NoMatches:
+            return
         if not inp.has_focus:
             return
 
         if event.key == "up" and self._input_history:
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             if self._history_index == -1:
                 self._history_draft = inp.value
                 self._history_index = len(self._input_history) - 1
@@ -456,8 +537,7 @@ class MulAgentApp(App):
             inp.value = self._input_history[self._history_index]
             inp.cursor_position = len(inp.value)
         elif event.key == "down" and self._history_index >= 0:
-            event.prevent_default()
-            event.stop()
+            event.prevent_default(); event.stop()
             if self._history_index < len(self._input_history) - 1:
                 self._history_index += 1
                 inp.value = self._input_history[self._history_index]
@@ -472,7 +552,6 @@ class MulAgentApp(App):
         text = event.value.strip()
         if not text:
             return
-        # If popup is visible and Enter is pressed, accept the completion instead
         if self._popup_visible and text.startswith("/"):
             popup = self.query_one("#cmd-popup", OptionList)
             idx = popup.highlighted
@@ -484,113 +563,210 @@ class MulAgentApp(App):
         self._hide_popup()
         event.input.clear()
 
-        # Save to input history
+        # Save to history
         if not self._input_history or self._input_history[-1] != text:
             self._input_history.append(text)
             if len(self._input_history) > 100:
                 self._input_history.pop(0)
         self._history_index = -1
 
-        # Commands
+        # ── Command dispatch ──
         cmd = text.lower()
         if cmd in ("/quit", "/exit", "/q"):
-            self.exit()
-            return
+            self.exit(); return
         if cmd == "/new":
-            self.action_new_session()
-            return
+            self.action_new_session(); return
         if cmd in ("/help", "/h"):
             self._write_system(
-                "/new -- new session  |  /model <id> -- switch model\n"
-                "/sessions -- list    |  /resume <id> -- resume\n"
-                "/modify -- context management (list/view/del/edit/clear/summary/compress)"
-            )
-            return
+                "/new — new session  |  /model <id> — switch model\n"
+                "/sessions — list    |  /resume <id> — resume\n"
+                "/fav — favorites    |  Ctrl+P — command palette\n"
+                "/modify — context management  |  /directives — rules"
+            ); return
         if cmd == "/sessions":
-            self._show_sessions()
-            return
+            self._show_sessions(); return
         if cmd.startswith("/resume"):
-            self._handle_resume(text)
-            return
+            self._handle_resume(text); return
         if cmd.startswith("/model"):
-            self._handle_model(text)
-            return
+            self._handle_model(text); return
+        if cmd.startswith("/fav"):
+            self._handle_fav(text); return
         if cmd.startswith("/modify"):
-            self._handle_modify(text)
-            return
+            self._handle_modify(text); return
         if cmd.startswith("/directives"):
-            self._handle_directives(text)
-            return
+            self._handle_directives(text); return
         if cmd.startswith("/evolve"):
-            self._run_evolve(text)
-            return
+            self._run_evolve(text); return
         if cmd.startswith("/absorb"):
-            self._run_absorb(text)
-            return
+            self._run_absorb(text); return
         if cmd.startswith("/"):
-            self._write_system(f"Unknown command: {cmd}")
-            return
+            self._write_system(f"Unknown command: {cmd}"); return
 
         if self._busy:
             self._write_system("Please wait for the current task to finish.")
             return
 
-        # Execute task
         self._write_chat("You", text)
         self._busy = True
+        self._task_start = time.monotonic()
+        self._update_top_bar()
+        self._clear_activity()
         self._run_task(text)
 
     @work(exclusive=True)
     async def _run_task(self, text: str) -> None:
         """Run agent task in a Textual worker."""
-        progress = self.query_one("#progress-bar", Static)
         t0 = time.monotonic()
-        actions: list[str] = []
 
         async def on_progress(round_num: int, action: str, detail: str) -> None:
-            if action == "tool_call" and detail:
-                actions.append(f"[{round_num}] {detail}")
-                display = "\n".join(actions[-6:])
-                progress.update(f"[yellow]{display}[/]")
+            activity = self.query_one("#activity-log", RichLog)
+            pbar = self.query_one("#progress-bar", Static)
+            if action == "todo_update" and detail:
+                try:
+                    tasks = json.loads(detail)
+                    done = sum(1 for t in tasks if t.get("status") == "done")
+                    total = len(tasks)
+                    activity.write(RichText(f"📋 Tasks [{done}/{total}]", style="bold"))
+                    for t in tasks:
+                        st = t.get("status", "pending")
+                        icon = "✅" if st == "done" else "🔄" if st == "running" else "⬜"
+                        activity.write(RichText(f"  {icon} #{t.get('id','')} {t.get('text','')[:20]}"))
+                    pct = int(done / total * 100) if total else 0
+                    filled = pct // 5
+                    bar = "█" * filled + "░" * (20 - filled)
+                    pbar.update(f"{bar} {pct}%")
+                except Exception:
+                    pass
+            elif action == "tool_call" and detail:
+                activity.write(RichText(f"🔧 [{round_num}] {detail}", style="cyan"))
             elif action == "thinking":
-                progress.update(f"[yellow]Round {round_num} thinking...[/]")
+                pbar.update(f"🔄 Round {round_num} thinking...")
+            elif action == "step_text" and detail:
+                line = detail.strip().split("\n")[0][:40]
+                if line and not line.startswith("{"):
+                    activity.write(RichText(f"📝 {line}", style="dim"))
+            return None
 
         try:
-            progress.update("[yellow]Thinking...[/]")
-            result = await self.runner.run(
-                text, self.session_id, on_progress=on_progress
-            )
+            result = await self.runner.run(text, self.session_id, on_progress=on_progress)
             output = result.get("final_output", "(no output)")
             elapsed = time.monotonic() - t0
             status = result.get("status", "?")
+            tools_used = result.get("tools_used", [])
+
+            self._last_latency = elapsed
+            self._last_tokens = f"{len(output)}c"
             self._write_chat("Assistant", output)
-            self._write_system(f"{status} | {elapsed:.1f}s")
+
+            # Final activity entry
+            activity = self.query_one("#activity-log", RichLog)
+            activity.write(RichText(
+                f"\n{'✅' if status == 'completed' else '⚠️'} {status} │ {elapsed:.1f}s │ {len(tools_used)} tools",
+                style="bold green" if status == "completed" else "bold yellow",
+            ))
+            self.query_one("#progress-bar", Static).update(
+                f"{'█' * 20} 100%" if status == "completed" else f"⚠️ {status}"
+            )
+
         except asyncio.CancelledError:
             self._write_system("Task cancelled.")
         except Exception as e:
             self._write_chat("Error", str(e))
+            activity = self.query_one("#activity-log", RichLog)
+            activity.write(RichText(f"❌ {e}", style="bold red"))
         finally:
-            progress.update("")
             self._busy = False
             self._refresh_sessions()
-            self._update_status()
+            self._update_top_bar()
 
     # ── Actions ───────────────────────────────────────────────
 
     def action_new_session(self) -> None:
         self.session_id = self.runner.session_manager.new_session("cli_user", "cli")
         self._clear_chat()
+        self._clear_activity()
         self._write_system(f"New session: {self.session_id[-16:]}")
         self._refresh_sessions()
-        self._update_status()
+        self._update_top_bar()
 
     def action_focus_input(self) -> None:
         self.query_one("#input-bar", Input).focus()
 
+    def action_command_palette(self) -> None:
+        def _on_result(cmd: str | None) -> None:
+            if cmd:
+                inp = self.query_one("#input-bar", Input)
+                inp.value = cmd + " "
+                inp.cursor_position = len(inp.value)
+                inp.focus()
+        self.push_screen(CommandPalette(), callback=_on_result)
+
+    def action_clear_display(self) -> None:
+        self._messages.clear()
+        self.query_one("#chat-log-raw", TextArea).clear()
+        self.query_one("#chat-log-rich", RichLog).clear()
+        self._clear_activity()
+
+    def action_add_favorite(self) -> None:
+        inp = self.query_one("#input-bar", Input)
+        text = inp.value.strip()
+        if text and text not in self._favorites:
+            self._favorites.append(text)
+            _save_favorites(self._favorites)
+            self._refresh_favorites()
+            self._write_system(f"Saved favorite: {text[:40]}")
+        elif not text:
+            self._write_system("Type something first, then Ctrl+F to save")
+
+    # ── /fav handler ─────────────────────────────────────────
+
+    def _handle_fav(self, text: str) -> None:
+        parts = text.split(maxsplit=2)
+        sub = parts[1].lower() if len(parts) > 1 else "list"
+
+        if sub == "list" or len(parts) == 1:
+            if not self._favorites:
+                self._write_system("(no favorites) — use Ctrl+F or /fav add <text>")
+            else:
+                lines = [f"Favorites ({len(self._favorites)}):"]
+                for i, f in enumerate(self._favorites):
+                    lines.append(f"  [{i}] 📌 {f[:50]}")
+                self._write_system("\n".join(lines))
+
+        elif sub == "add":
+            if len(parts) < 3:
+                self._write_system("usage: /fav add <prompt text>")
+                return
+            prompt = parts[2].strip()
+            if prompt not in self._favorites:
+                self._favorites.append(prompt)
+                _save_favorites(self._favorites)
+                self._refresh_favorites()
+                self._write_system(f"Saved: {prompt[:40]}")
+            else:
+                self._write_system("Already in favorites")
+
+        elif sub in ("del", "rm"):
+            if len(parts) < 3:
+                self._write_system("usage: /fav del <index>")
+                return
+            try:
+                idx = int(parts[2])
+                if 0 <= idx < len(self._favorites):
+                    removed = self._favorites.pop(idx)
+                    _save_favorites(self._favorites)
+                    self._refresh_favorites()
+                    self._write_system(f"Removed: {removed[:40]}")
+                else:
+                    self._write_system(f"Invalid index [{idx}]")
+            except ValueError:
+                self._write_system("Index must be a number")
+        else:
+            self._write_system("/fav list | /fav add <text> | /fav del <n>")
+
     # ── /modify handler ───────────────────────────────────────
 
     def _handle_modify(self, text: str) -> None:
-        """Handle /modify subcommands for context CRUD."""
         parts = text.split(maxsplit=2)
         sub = parts[1].lower() if len(parts) > 1 else "list"
         conv_store = self.runner.session_manager.conv_store
@@ -604,127 +780,92 @@ class MulAgentApp(App):
             for i, t in enumerate(turns):
                 role = "U" if t["role"] == "user" else "A"
                 preview = t["content"][:60].replace("\n", " ")
-                ts = t.get("ts", "")[:16]
-                lines.append(f"  [{i}] {role}: {preview}...  ({ts})")
-            summary = conv_store.get_summary(self.session_id)
-            if summary:
-                lines.append(f"\n  Summary: {summary[:100]}...")
+                lines.append(f"  [{i}] {role}: {preview}...")
             self._write_system("\n".join(lines))
 
         elif sub == "view":
             if len(parts) < 3:
-                self._write_system("usage: /modify view <index>")
-                return
+                self._write_system("usage: /modify view <index>"); return
             try:
                 idx = int(parts[2])
             except ValueError:
-                self._write_system("index must be a number")
-                return
+                self._write_system("index must be a number"); return
             turns = conv_store.list_turns(self.session_id)
             if idx < 0 or idx >= len(turns):
-                self._write_system(f"index out of range (0-{len(turns)-1})")
-                return
+                self._write_system(f"index out of range (0-{len(turns)-1})"); return
             t = turns[idx]
             role = "User" if t["role"] == "user" else "Assistant"
-            self._write_system(f"[{idx}] {role} ({t.get('ts', '')[:19]}):\n{t['content']}")
+            self._write_system(f"[{idx}] {role}:\n{t['content']}")
 
         elif sub in ("del", "delete", "rm"):
             if len(parts) < 3:
-                self._write_system("usage: /modify del <index|start-end>")
-                return
+                self._write_system("usage: /modify del <index|start-end>"); return
             arg = parts[2].strip()
             if "-" in arg and not arg.startswith("-"):
-                # Range delete: /modify del 2-5
                 try:
                     start, end = arg.split("-", 1)
-                    start_i, end_i = int(start), int(end)
-                    count = conv_store.delete_turns_range(self.session_id, start_i, end_i + 1)
-                    self._write_system(f"Deleted {count} turns [{start_i}-{end_i}]")
+                    count = conv_store.delete_turns_range(self.session_id, int(start), int(end) + 1)
+                    self._write_system(f"Deleted {count} turns")
                 except ValueError:
-                    self._write_system("invalid range, use: /modify del 2-5")
+                    self._write_system("invalid range")
             else:
                 try:
                     idx = int(arg)
                 except ValueError:
-                    self._write_system("index must be a number")
-                    return
+                    self._write_system("index must be a number"); return
                 if conv_store.delete_turn(self.session_id, idx):
                     self._write_system(f"Deleted turn [{idx}]")
                 else:
-                    self._write_system(f"Failed to delete turn [{idx}]")
+                    self._write_system(f"Failed to delete [{idx}]")
 
         elif sub == "edit":
-            # /modify edit <n> — open interactive editor overlay
             if len(parts) < 3:
-                self._write_system("usage: /modify edit <index>")
-                return
+                self._write_system("usage: /modify edit <index>"); return
             try:
                 idx = int(parts[2])
             except ValueError:
-                self._write_system("index must be a number")
-                return
+                self._write_system("index must be a number"); return
             turns = conv_store.list_turns(self.session_id)
             if idx < 0 or idx >= len(turns):
-                self._write_system(f"index out of range (0-{len(turns)-1})")
-                return
+                self._write_system(f"index out of range (0-{len(turns)-1})"); return
             t = turns[idx]
             role = "User" if t["role"] == "user" else "Assistant"
-
             def _on_edit_done(result: str | None) -> None:
                 if result is None:
                     self._write_system("Edit cancelled")
-                    return
-                if conv_store.edit_turn(self.session_id, idx, result):
-                    self._write_system(f"Updated turn [{idx}] ({len(result)} chars)")
+                elif conv_store.edit_turn(self.session_id, idx, result):
+                    self._write_system(f"Updated turn [{idx}]")
                 else:
-                    self._write_system(f"Failed to save turn [{idx}]")
-
-            self.push_screen(
-                EditScreen(idx, role, t["content"]),
-                callback=_on_edit_done,
-            )
+                    self._write_system(f"Failed to save [{idx}]")
+            self.push_screen(EditScreen(idx, role, t["content"]), callback=_on_edit_done)
 
         elif sub == "clear":
             if conv_store.clear_turns(self.session_id):
-                self._write_system("Context cleared (all turns removed)")
+                self._write_system("Context cleared")
             else:
-                self._write_system("Failed to clear context")
+                self._write_system("Failed to clear")
 
         elif sub == "summary":
             summary = conv_store.get_summary(self.session_id)
-            if summary:
-                self._write_system(f"Summary: {summary}")
-            else:
-                self._write_system("(no summary yet, auto-generated after 20+ turns)")
+            self._write_system(f"Summary: {summary}" if summary else "(no summary yet)")
 
         elif sub == "compress":
-            self._write_system("Compressing context...")
+            self._write_system("Compressing...")
             self._run_compress()
 
         else:
             self._write_system(
-                "/modify subcommands:\n"
-                "  list           -- show all turns with indices\n"
-                "  view <n>       -- view full content of turn n\n"
-                "  del <n>        -- delete turn n\n"
-                "  del <n-m>      -- delete turns n through m\n"
-                "  edit <n>       -- open editor for turn n (Ctrl+S save, Esc cancel)\n"
-                "  clear          -- remove all turns\n"
-                "  summary        -- show conversation summary\n"
-                "  compress       -- force summarize old turns"
+                "/modify: list | view <n> | del <n> | edit <n> | clear | summary | compress"
             )
 
     @work(exclusive=True, thread=True)
     def _run_compress(self) -> None:
-        """Run async summarization in a worker."""
         import asyncio as _aio
         conv_store = self.runner.session_manager.conv_store
         llm = self.runner._react_params.get("llm")
         try:
             loop = _aio.new_event_loop()
-            loop.run_until_complete(
-                conv_store.maybe_summarize(self.session_id, llm=llm)
-            )
+            loop.run_until_complete(conv_store.maybe_summarize(self.session_id, llm=llm))
             loop.close()
             self.call_from_thread(self._write_system, "Context compressed")
         except Exception as e:
@@ -734,7 +875,6 @@ class MulAgentApp(App):
 
     @work(exclusive=True, thread=True)
     def _run_evolve(self, text: str) -> None:
-        """Run evolution in a worker thread."""
         import asyncio as _aio
         parts = text.split(maxsplit=1)
         sub = parts[1].strip().lower() if len(parts) > 1 else "propose"
@@ -762,23 +902,12 @@ class MulAgentApp(App):
                         )
                     self.call_from_thread(self._write_system, "\n".join(lines))
             elif sub in ("propose", "auto", "full"):
-                self.call_from_thread(
-                    self._write_system,
-                    f"Running evolution ({sub} mode)..."
-                )
-                report = loop.run_until_complete(
-                    ctrl.evolve(mode=sub, llm=llm)
-                )
+                self.call_from_thread(self._write_system, f"Running evolution ({sub})...")
+                report = loop.run_until_complete(ctrl.evolve(mode=sub, llm=llm))
                 self.call_from_thread(self._write_system, report.summary())
             else:
                 self.call_from_thread(self._write_system,
-                    "/evolve subcommands:\n"
-                    "  propose   -- diagnose + proposals (default)\n"
-                    "  diagnose  -- diagnostic report only\n"
-                    "  auto      -- apply safe changes\n"
-                    "  full      -- apply all changes\n"
-                    "  history   -- past evolution records"
-                )
+                    "/evolve: propose | diagnose | auto | full | history")
         except Exception as e:
             self.call_from_thread(self._write_system, f"Evolution error: {e}")
         finally:
@@ -786,21 +915,13 @@ class MulAgentApp(App):
 
     @work(exclusive=True, thread=True)
     def _run_absorb(self, text: str) -> None:
-        """Run project absorption in a worker thread."""
         import asyncio as _aio
         parts = text.split(maxsplit=1)
         if len(parts) < 2:
-            self.call_from_thread(self._write_system,
-                "usage: /absorb <git_url>\n"
-                "example: /absorb https://github.com/user/project.git"
-            )
+            self.call_from_thread(self._write_system, "usage: /absorb <git_url>")
             return
-
         git_url = parts[1].strip()
-        self.call_from_thread(
-            self._write_system,
-            f"Cloning and analyzing: {git_url}..."
-        )
+        self.call_from_thread(self._write_system, f"Analyzing: {git_url}...")
 
         from evolution.controller import EvolutionController
         ctrl = EvolutionController()
@@ -808,15 +929,8 @@ class MulAgentApp(App):
 
         loop = _aio.new_event_loop()
         try:
-            report = loop.run_until_complete(
-                ctrl.absorb_project(git_url, auto_apply=False, llm=llm)
-            )
+            report = loop.run_until_complete(ctrl.absorb_project(git_url, auto_apply=False, llm=llm))
             self.call_from_thread(self._write_system, report.summary())
-            if report.proposed:
-                self.call_from_thread(
-                    self._write_system,
-                    "To apply: /evolve full"
-                )
         except Exception as e:
             self.call_from_thread(self._write_system, f"Absorb error: {e}")
         finally:
@@ -825,7 +939,6 @@ class MulAgentApp(App):
     # ── /directives handler ─────────────────────────────────────
 
     def _handle_directives(self, text: str) -> None:
-        """Handle /directives for persistent cross-session rules."""
         parts = text.split(maxsplit=2)
         sub = parts[1].lower() if len(parts) > 1 else "list"
         conv_store = self.runner.session_manager.conv_store
@@ -836,70 +949,54 @@ class MulAgentApp(App):
             if not persistent:
                 self._write_system("(no persistent directives)")
             else:
-                lines = [f"Persistent directives ({len(persistent)}):"]
+                lines = [f"Directives ({len(persistent)}):"]
                 for i, d in enumerate(persistent):
                     lines.append(f"  [{i}] {d}")
                 self._write_system("\n".join(lines))
-
         elif sub == "add":
             if len(parts) < 3:
-                self._write_system("usage: /directives add <rule>")
-                return
+                self._write_system("usage: /directives add <rule>"); return
             directive = parts[2].strip()
             if conv_store.add_persistent_directive(user_id, directive):
                 self._write_system(f"Added: {directive}")
             else:
                 self._write_system("Already exists")
-
         elif sub in ("del", "rm"):
             if len(parts) < 3:
-                self._write_system("usage: /directives del <index>")
-                return
+                self._write_system("usage: /directives del <index>"); return
             try:
                 idx = int(parts[2])
             except ValueError:
-                self._write_system("index must be a number")
-                return
+                self._write_system("index must be a number"); return
             if conv_store.remove_persistent_directive(user_id, idx):
-                self._write_system(f"Removed directive [{idx}]")
+                self._write_system(f"Removed [{idx}]")
             else:
                 self._write_system(f"Invalid index [{idx}]")
-
         elif sub == "clear":
             conv_store.save_persistent_directives(user_id, [])
-            self._write_system("All persistent directives cleared")
-
+            self._write_system("All directives cleared")
         else:
-            self._write_system(
-                "/directives subcommands:\n"
-                "  list          -- show persistent directives\n"
-                "  add <rule>    -- add (persists across sessions)\n"
-                "  del <n>       -- remove by index\n"
-                "  clear         -- remove all"
-            )
+            self._write_system("/directives: list | add <rule> | del <n> | clear")
 
-    # ── Helpers ───────────────────────────────────────────────
+    # ── Chat output helpers ───────────────────────────────────
 
     def _write_chat(self, role: str, content: str) -> None:
         self._messages.append({"role": role, "content": content})
-        # Write to raw panel
+        # Raw panel
         raw = self.query_one("#chat-log-raw", TextArea)
-        line = f"\n{role}:\n{content}\n"
-        raw.insert(line, raw.document.end)
+        raw.insert(f"\n{role}:\n{content}\n", raw.document.end)
         raw.scroll_end(animate=False)
-        # Write to rich panel
+        # Rich panel
         rich_log = self.query_one("#chat-log-rich", RichLog)
-        role_style = "bold cyan" if role == "Assistant" else "bold green"
+        role_style = "bold cyan" if role == "Assistant" else "bold green" if role == "You" else "bold red"
         rich_log.write(RichText(f"\n{role}:", style=role_style))
         rich_log.write(RichMarkdown(content))
 
     def _write_system(self, msg: str) -> None:
         self._messages.append({"role": "system", "content": msg})
-        # Write to raw panel
         raw = self.query_one("#chat-log-raw", TextArea)
         raw.insert(f"\n--- {msg}\n", raw.document.end)
         raw.scroll_end(animate=False)
-        # Write to rich panel
         rich_log = self.query_one("#chat-log-rich", RichLog)
         rich_log.write(RichText(f"--- {msg}", style="dim"))
 
@@ -908,15 +1005,11 @@ class MulAgentApp(App):
         self.query_one("#chat-log-raw", TextArea).clear()
         self.query_one("#chat-log-rich", RichLog).clear()
 
-    def _update_status(self) -> None:
-        try:
-            status = self.query_one("#status", Static)
-            sid_short = self.session_id[-16:] if self.session_id else "none"
-            status.update(
-                f"  session: {sid_short}  |  model: {self.runner.current_model}"
-            )
-        except NoMatches:
-            pass
+    def _clear_activity(self) -> None:
+        self.query_one("#activity-log", RichLog).clear()
+        self.query_one("#progress-bar", Static).update("")
+
+    # ── Session/model helpers ─────────────────────────────────
 
     def _refresh_sessions(self) -> None:
         try:
@@ -927,19 +1020,16 @@ class MulAgentApp(App):
             for s in sessions:
                 sid = s["session_id"][-8:]
                 turns = s.get("turns", 0)
-                preview = s.get("preview", "")[:28] or "(empty)"
-                # Highlight current session
-                marker = " *" if s["session_id"] == self.session_id else ""
-                label = f"{sid}{marker} [{turns}t] {preview}"
-                lv.append(ListItem(Label(label)))
+                preview = s.get("preview", "")[:16] or "(empty)"
+                marker = "▸" if s["session_id"] == self.session_id else " "
+                lv.append(ListItem(Label(f"{marker}{sid} [{turns}] {preview}")))
         except NoMatches:
             pass
 
     def _show_sessions(self) -> None:
         sessions = self.runner.session_manager.list_sessions("cli_user", limit=10)
         if not sessions:
-            self._write_system("(no sessions)")
-            return
+            self._write_system("(no sessions)"); return
         lines = []
         for s in sessions:
             sid = s["session_id"][-16:]
@@ -949,20 +1039,17 @@ class MulAgentApp(App):
     def _handle_resume(self, text: str) -> None:
         parts = text.split(maxsplit=1)
         if len(parts) < 2:
-            self._write_system("usage: /resume <session_id_fragment>")
-            return
+            self._write_system("usage: /resume <session_id_fragment>"); return
         target = parts[1].strip()
         sessions = self.runner.session_manager.list_sessions("cli_user", limit=50)
         matched = next((s for s in sessions if target in s["session_id"]), None)
         if matched:
             self.session_id = matched["session_id"]
-            self.runner.session_manager.resume_session(
-                "cli_user", "cli", self.session_id
-            )
+            self.runner.session_manager.resume_session("cli_user", "cli", self.session_id)
             self._clear_chat()
             self._load_session_history()
             self._refresh_sessions()
-            self._update_status()
+            self._update_top_bar()
         else:
             self._write_system(f"No session matching '{target}'")
 
@@ -980,15 +1067,10 @@ class MulAgentApp(App):
         model_id = parts[1].strip()
         if self.runner.switch_model(model_id):
             self._write_system(f"Model -> {model_id}")
-            self._update_status()
-            try:
-                self.query_one("#model-label", Label).update(
-                    f"Model: {model_id}"
-                )
-            except NoMatches:
-                pass
+            self._update_top_bar()
         else:
-            self._write_system(f"Unknown model: {model_id}")
+            available = ", ".join(m["id"] for m in self.runner.llm_manager.list_models())
+            self._write_system(f"Unknown model: {model_id}\nAvailable: {available}")
 
 
 # ── Entry point ──────────────────────────────────────────────────
