@@ -205,9 +205,28 @@ class MulAgentApp(App):
     """mul-agent Terminal UI — three-panel layout."""
 
     TITLE = "mul-agent"
+
+    # Force pure-black theme
+    def _register_black_theme(self):
+        from textual.theme import Theme
+        self.register_theme(Theme(
+            name="mulagent-dark",
+            primary="#4488cc",
+            secondary="#666666",
+            accent="#44aaff",
+            warning="#ffaa00",
+            error="#ff4444",
+            success="#44cc44",
+            background="#000000",
+            surface="#111111",
+            panel="#111111",
+            dark=True,
+        ))
+
     CSS = """
     /* ── Global black background ── */
-    Screen { background: black; }
+    Screen { background: #000000; }
+    * { scrollbar-background: #111111; scrollbar-color: #333333; }
 
     /* ── Top bar ── */
     #top-bar {
@@ -372,6 +391,8 @@ class MulAgentApp(App):
         )
 
     def on_mount(self) -> None:
+        self._register_black_theme()
+        self.theme = "mulagent-dark"
         self._refresh_sessions()
         self._refresh_favorites()
         self._update_top_bar()
