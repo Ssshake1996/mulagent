@@ -327,8 +327,9 @@ class MulAgentApp(App):
             error="#ff4444",
             success="#44cc44",
             background="#000000",
-            surface="#111111",
-            panel="#111111",
+            surface="#000000",
+            panel="#000000",
+            boost="#000000",
             dark=True,
         ))
         self.theme = "mulagent-dark"
