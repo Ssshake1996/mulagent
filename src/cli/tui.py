@@ -384,6 +384,19 @@ class MulAgentApp(App):
         )
 
     def on_mount(self) -> None:
+        # Force pure black on every widget — CSS alone can't override DEFAULT_CSS tints
+        from textual.color import Color
+        black = Color.parse("black")
+        transparent = Color.parse("transparent")
+        for widget in self.query("*"):
+            widget.styles.background = black
+            widget.styles.background_tint = transparent
+        # Restore non-black elements
+        for sel in ("#top-bar", "#left-panel-title", "#fav-title", ".panel-section-title", "#shortcut-bar", "#cmd-popup"):
+            try:
+                self.query_one(sel).styles.background = Color.parse("#111111")
+            except Exception:
+                pass
         self._refresh_sessions()
         self._refresh_favorites()
         self._update_top_bar()
