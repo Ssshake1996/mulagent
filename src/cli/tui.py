@@ -208,24 +208,23 @@ class MulAgentApp(App):
     theme = "mulagent-dark"
 
     CSS = """
-    /* ── Kill all tints, force pure black ── */
-    Screen { background: #000000; }
+    /* ── Force pure black everywhere (need !important to override DEFAULT_CSS) ── */
+    Screen { background: #000000 !important; }
+    RichLog, TextArea, ListView, OptionList, Input, Static, Label,
+    Vertical, Horizontal, VerticalScroll,
+    TabbedContent, ContentSwitcher, TabPane, ListItem {
+        background: #000000 !important;
+        background-tint: transparent !important;
+    }
     * {
         scrollbar-background: #111111;
         scrollbar-color: #333333;
-        background-tint: transparent;
-    }
-    RichLog, TextArea, ListView, OptionList, Input, Static, Label,
-    Vertical, Horizontal, VerticalScroll,
-    TabbedContent, ContentSwitcher, TabPane {
-        background: #000000;
-        background-tint: transparent;
     }
 
     /* ── Top bar ── */
     #top-bar {
         height: 1;
-        background: #111111;
+        background: #111111 !important;
         color: #cccccc;
         padding: 0 2;
         text-style: bold;
@@ -243,7 +242,7 @@ class MulAgentApp(App):
         text-style: bold;
         padding: 0 1;
         color: $accent;
-        background: #111111;
+        background: #111111 !important;
     }
     #session-list { height: 1fr; overflow-y: auto; }
     #session-list > ListItem {
@@ -254,7 +253,7 @@ class MulAgentApp(App):
         text-style: bold;
         padding: 0 1;
         color: $accent;
-        background: #111111;
+        background: #111111 !important;
         border-top: solid #333333;
     }
     #fav-list { height: auto; max-height: 10; overflow-y: auto; }
@@ -276,7 +275,7 @@ class MulAgentApp(App):
         text-style: bold;
         padding: 0 1;
         color: $accent;
-        background: #111111;
+        background: #111111 !important;
     }
     #activity-log { height: 1fr; padding: 0 1; }
     #progress-bar { height: 1; padding: 0 1; color: $warning; }
@@ -287,7 +286,7 @@ class MulAgentApp(App):
         display: none;
         height: auto; max-height: 14;
         padding: 0 1;
-        background: #111111; border: solid #333333; margin: 0 1;
+        background: #111111 !important; border: solid #333333; margin: 0 1;
     }
     #cmd-popup.visible { display: block; }
     #input-bar { padding: 0 1; }
@@ -295,7 +294,7 @@ class MulAgentApp(App):
         height: 1;
         padding: 0 1;
         color: #666666;
-        background: #111111;
+        background: #111111 !important;
     }
     """
 
@@ -384,19 +383,6 @@ class MulAgentApp(App):
         )
 
     def on_mount(self) -> None:
-        # Force pure black on every widget — CSS alone can't override DEFAULT_CSS tints
-        from textual.color import Color
-        black = Color.parse("black")
-        transparent = Color.parse("transparent")
-        for widget in self.query("*"):
-            widget.styles.background = black
-            widget.styles.background_tint = transparent
-        # Restore non-black elements
-        for sel in ("#top-bar", "#left-panel-title", "#fav-title", ".panel-section-title", "#shortcut-bar", "#cmd-popup"):
-            try:
-                self.query_one(sel).styles.background = Color.parse("#111111")
-            except Exception:
-                pass
         self._refresh_sessions()
         self._refresh_favorites()
         self._update_top_bar()
