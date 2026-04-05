@@ -175,7 +175,7 @@ class MulAgentApp(App):
         height: 1fr;
     }
     #sidebar {
-        width: 28;
+        width: 32;
         border-right: solid $primary-background;
         padding: 0 1;
     }
@@ -186,6 +186,14 @@ class MulAgentApp(App):
     }
     #session-list {
         height: 1fr;
+        overflow-y: auto;
+    }
+    #session-list > ListItem {
+        height: auto;
+        padding: 0 1;
+    }
+    #session-list > ListItem:hover {
+        background: $accent 20%;
     }
     #model-label {
         padding: 1 0 0 0;
@@ -196,6 +204,14 @@ class MulAgentApp(App):
     }
     #chat-tabs {
         height: 1fr;
+    }
+    /* Ensure both tab labels are always visible */
+    TabbedContent ContentSwitcher {
+        height: 1fr;
+    }
+    TabPane {
+        height: 1fr;
+        padding: 0;
     }
     #chat-log-raw {
         height: 1fr;
@@ -253,6 +269,10 @@ class MulAgentApp(App):
         self._popup_visible = False
         self._filtered_cmds: list[tuple[str, str]] = []
         self._messages: list[dict[str, str]] = []  # {"role": ..., "content": ...}
+        self._input_history: list[str] = []         # command/message history
+        self._history_index: int = -1               # -1 = not browsing history
+        self._history_draft: str = ""               # save draft when browsing
+        self._sessions_cache: list[dict] = []       # cached session list for click-to-resume
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -294,6 +314,36 @@ class MulAgentApp(App):
         self._refresh_sessions()
         self._update_status()
         self.query_one("#input-bar", Input).focus()
+
+    # ── Session list: click or Enter to resume ──────────────────
+
+    @on(ListView.Selected, "#session-list")
+    def _on_session_selected(self, event: ListView.Selected) -> None:
+        """Resume a session when selected from the sidebar."""
+        idx = event.list_view.index
+        if idx is not None and 0 <= idx < len(self._sessions_cache):
+            session = self._sessions_cache[idx]
+            self.session_id = session["session_id"]
+            self.runner.session_manager.resume_session(
+                "cli_user", "cli", self.session_id
+            )
+            self._clear_chat()
+            self._load_session_history()
+            self._refresh_sessions()
+            self._update_status()
+            self.query_one("#input-bar", Input).focus()
+
+    def _load_session_history(self) -> None:
+        """Load and display conversation history for the current session."""
+        conv_store = self.runner.session_manager.conv_store
+        turns = conv_store.list_turns(self.session_id)
+        if not turns:
+            self._write_system(f"Resumed: {self.session_id[-16:]} (no history)")
+            return
+        for t in turns:
+            role = "You" if t["role"] == "user" else "Assistant"
+            self._write_chat(role, t["content"])
+        self._write_system(f"Resumed: {self.session_id[-16:]} ({len(turns)} turns loaded)")
 
     # ── Command auto-completion ────────────────────────────────
 
@@ -357,35 +407,64 @@ class MulAgentApp(App):
         self._accept_completion()
 
     def on_key(self, event) -> None:
-        """Intercept arrow keys and Tab/Enter for popup navigation."""
-        if not self._popup_visible:
+        """Intercept arrow keys and Tab/Enter for popup and history navigation."""
+        # ── Popup navigation (command auto-complete) ──
+        if self._popup_visible:
+            popup = self.query_one("#cmd-popup", OptionList)
+
+            if event.key == "down":
+                event.prevent_default()
+                event.stop()
+                h = popup.highlighted
+                if h is None:
+                    popup.highlighted = 0
+                elif h < len(self._filtered_cmds) - 1:
+                    popup.highlighted = h + 1
+                return
+            elif event.key == "up":
+                event.prevent_default()
+                event.stop()
+                h = popup.highlighted
+                if h is not None and h > 0:
+                    popup.highlighted = h - 1
+                return
+            elif event.key == "tab":
+                event.prevent_default()
+                event.stop()
+                self._accept_completion()
+                return
+            elif event.key == "escape":
+                event.prevent_default()
+                event.stop()
+                self._hide_popup()
+                self.query_one("#input-bar", Input).focus()
+                return
+
+        # ── Input history navigation (up/down arrows) ──
+        inp = self.query_one("#input-bar", Input)
+        if not inp.has_focus:
             return
 
-        popup = self.query_one("#cmd-popup", OptionList)
-
-        if event.key == "down":
+        if event.key == "up" and self._input_history:
             event.prevent_default()
             event.stop()
-            h = popup.highlighted
-            if h is None:
-                popup.highlighted = 0
-            elif h < len(self._filtered_cmds) - 1:
-                popup.highlighted = h + 1
-        elif event.key == "up":
+            if self._history_index == -1:
+                self._history_draft = inp.value
+                self._history_index = len(self._input_history) - 1
+            elif self._history_index > 0:
+                self._history_index -= 1
+            inp.value = self._input_history[self._history_index]
+            inp.cursor_position = len(inp.value)
+        elif event.key == "down" and self._history_index >= 0:
             event.prevent_default()
             event.stop()
-            h = popup.highlighted
-            if h is not None and h > 0:
-                popup.highlighted = h - 1
-        elif event.key == "tab":
-            event.prevent_default()
-            event.stop()
-            self._accept_completion()
-        elif event.key == "escape":
-            event.prevent_default()
-            event.stop()
-            self._hide_popup()
-            self.query_one("#input-bar", Input).focus()
+            if self._history_index < len(self._input_history) - 1:
+                self._history_index += 1
+                inp.value = self._input_history[self._history_index]
+            else:
+                self._history_index = -1
+                inp.value = self._history_draft
+            inp.cursor_position = len(inp.value)
 
     # ── Input handling ────────────────────────────────────────
 
@@ -399,13 +478,18 @@ class MulAgentApp(App):
             idx = popup.highlighted
             if idx is not None and 0 <= idx < len(self._filtered_cmds):
                 cmd, _desc = self._filtered_cmds[idx]
-                # Only intercept if the input exactly matches a partial prefix
-                # (i.e., user hasn't typed a full command + args yet)
                 if text.lower() != cmd and cmd.startswith(text.lower()):
                     self._accept_completion()
                     return
         self._hide_popup()
         event.input.clear()
+
+        # Save to input history
+        if not self._input_history or self._input_history[-1] != text:
+            self._input_history.append(text)
+            if len(self._input_history) > 100:
+                self._input_history.pop(0)
+        self._history_index = -1
 
         # Commands
         cmd = text.lower()
@@ -839,10 +923,14 @@ class MulAgentApp(App):
             lv = self.query_one("#session-list", ListView)
             lv.clear()
             sessions = self.runner.session_manager.list_sessions("cli_user", limit=15)
+            self._sessions_cache = sessions
             for s in sessions:
-                sid = s["session_id"][-12:]
-                preview = s["preview"][:20] if s.get("preview") else ""
-                label = f"{sid} {preview}"
+                sid = s["session_id"][-8:]
+                turns = s.get("turns", 0)
+                preview = s.get("preview", "")[:28] or "(empty)"
+                # Highlight current session
+                marker = " *" if s["session_id"] == self.session_id else ""
+                label = f"{sid}{marker} [{turns}t] {preview}"
                 lv.append(ListItem(Label(label)))
         except NoMatches:
             pass
@@ -872,9 +960,7 @@ class MulAgentApp(App):
                 "cli_user", "cli", self.session_id
             )
             self._clear_chat()
-            self._write_system(
-                f"Resumed: {self.session_id[-16:]}  {matched['turns']} turns"
-            )
+            self._load_session_history()
             self._refresh_sessions()
             self._update_status()
         else:
