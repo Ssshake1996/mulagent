@@ -1097,6 +1097,15 @@ class MulAgentApp(App):
 
 def run_tui(args) -> None:
     """Launch the Textual TUI. Called from cli.main."""
+    import os
+    # Ensure terminal supports truecolor — many terminals report xterm (8-color)
+    # but actually support 256/truecolor. Without this, Textual maps all colors
+    # to the nearest 8-color value, making black backgrounds appear grey.
+    if os.environ.get("TERM") in ("xterm", "screen", "vt100", ""):
+        os.environ["TERM"] = "xterm-256color"
+    if not os.environ.get("COLORTERM"):
+        os.environ["COLORTERM"] = "truecolor"
+
     from cli import ensure_src_path
     ensure_src_path()
 
