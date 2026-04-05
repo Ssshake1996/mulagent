@@ -208,9 +208,19 @@ class MulAgentApp(App):
     theme = "mulagent-dark"
 
     CSS = """
-    /* ── Global black background ── */
+    /* ── Kill all tints, force pure black ── */
     Screen { background: #000000; }
-    * { scrollbar-background: #111111; scrollbar-color: #333333; }
+    * {
+        scrollbar-background: #111111;
+        scrollbar-color: #333333;
+        background-tint: transparent;
+    }
+    RichLog, TextArea, ListView, OptionList, Input, Static, Label,
+    Vertical, Horizontal, VerticalScroll,
+    TabbedContent, ContentSwitcher, TabPane {
+        background: #000000;
+        background-tint: transparent;
+    }
 
     /* ── Top bar ── */
     #top-bar {
@@ -226,7 +236,6 @@ class MulAgentApp(App):
 
     #left-panel {
         width: 24;
-        background: black;
         border-right: solid #333333;
         padding: 0;
     }
@@ -236,12 +245,11 @@ class MulAgentApp(App):
         color: $accent;
         background: #111111;
     }
-    #session-list {
-        height: 1fr;
-        overflow-y: auto;
-        background: black;
+    #session-list { height: 1fr; overflow-y: auto; }
+    #session-list > ListItem {
+        padding: 0 1;
+        text-style: underline;
     }
-    #session-list > ListItem { padding: 0 1; }
     #fav-title {
         text-style: bold;
         padding: 0 1;
@@ -249,24 +257,18 @@ class MulAgentApp(App):
         background: #111111;
         border-top: solid #333333;
     }
-    #fav-list {
-        height: auto;
-        max-height: 10;
-        overflow-y: auto;
-        background: black;
-    }
+    #fav-list { height: auto; max-height: 10; overflow-y: auto; }
     #fav-list > ListItem { padding: 0 1; }
 
-    #center-panel { width: 1fr; background: black; }
-    TabbedContent { height: 1fr; background: black; }
-    TabbedContent ContentSwitcher { height: 1fr; background: black; }
-    TabPane { height: 1fr; padding: 0; background: black; }
-    #chat-log-rich { height: 1fr; padding: 0 1; background: black; }
-    #chat-log-raw { height: 1fr; padding: 0 1; background: black; }
+    #center-panel { width: 1fr; }
+    TabbedContent { height: 1fr; }
+    TabbedContent ContentSwitcher { height: 1fr; }
+    TabPane { height: 1fr; padding: 0; }
+    #chat-log-rich { height: 1fr; padding: 0 1; }
+    #chat-log-raw { height: 1fr; padding: 0 1; }
 
     #right-panel {
         width: 28;
-        background: black;
         border-left: solid #333333;
         padding: 0;
     }
@@ -276,20 +278,11 @@ class MulAgentApp(App):
         color: $accent;
         background: #111111;
     }
-    #activity-log {
-        height: 1fr;
-        padding: 0 1;
-        background: black;
-    }
-    #progress-bar {
-        height: 1;
-        padding: 0 1;
-        color: $warning;
-        background: black;
-    }
+    #activity-log { height: 1fr; padding: 0 1; }
+    #progress-bar { height: 1; padding: 0 1; color: $warning; }
 
     /* ── Bottom bar ── */
-    #input-wrapper { dock: bottom; height: auto; background: black; }
+    #input-wrapper { dock: bottom; height: auto; }
     #cmd-popup {
         display: none;
         height: auto; max-height: 14;
@@ -297,7 +290,7 @@ class MulAgentApp(App):
         background: #111111; border: solid #333333; margin: 0 1;
     }
     #cmd-popup.visible { display: block; }
-    #input-bar { padding: 0 1; background: black; }
+    #input-bar { padding: 0 1; }
     #shortcut-bar {
         height: 1;
         padding: 0 1;
