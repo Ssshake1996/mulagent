@@ -205,26 +205,12 @@ class MulAgentApp(App):
     """mul-agent Terminal UI — three-panel layout."""
 
     TITLE = "mul-agent"
-    theme = "mulagent-dark"
-
     CSS = """
-    /* ── Force pure black everywhere (need !important to override DEFAULT_CSS) ── */
-    Screen { background: #000000 !important; }
-    RichLog, TextArea, ListView, OptionList, Input, Static, Label,
-    Vertical, Horizontal, VerticalScroll,
-    TabbedContent, ContentSwitcher, TabPane, ListItem {
-        background: #000000 !important;
-        background-tint: transparent !important;
-    }
-    * {
-        scrollbar-background: #111111;
-        scrollbar-color: #333333;
-    }
-
     /* ── Top bar ── */
     #top-bar {
         height: 1;
-        color: #44aaff;
+        background: $primary;
+        color: $text;
         padding: 0 2;
         text-style: bold;
     }
@@ -234,68 +220,61 @@ class MulAgentApp(App):
 
     #left-panel {
         width: 24;
-        border-right: solid #333333;
+        border-right: solid $primary-background;
         padding: 0;
     }
     #left-panel-title {
         text-style: bold;
         padding: 0 1;
-        color: #44aaff;
+        color: $accent;
+        background: $surface;
     }
-    #session-list { height: 1fr; overflow-y: auto; }
-    #session-list > ListItem {
-        padding: 0 1;
-        color: #66aaff;
-        text-style: underline;
+    #session-list {
+        height: 1fr;
+        overflow-y: auto;
     }
-    #session-list > ListItem:hover {
-        color: #99ccff;
-    }
+    #session-list > ListItem { padding: 0 1; }
     #fav-title {
         text-style: bold;
         padding: 0 1;
-        color: #44aaff;
-        border-top: solid #333333;
+        color: $accent;
+        background: $surface;
+        border-top: solid $primary-background;
     }
-    #fav-list { height: auto; max-height: 10; overflow-y: auto; }
+    #fav-list {
+        height: auto;
+        max-height: 10;
+        overflow-y: auto;
+    }
     #fav-list > ListItem { padding: 0 1; }
 
     #center-panel { width: 1fr; }
     TabbedContent { height: 1fr; }
     TabbedContent ContentSwitcher { height: 1fr; }
     TabPane { height: 1fr; padding: 0; }
-
-    /* ── Tab buttons (text-only, no bg change) ── */
-    ContentTab {
-        color: #666666;
-        padding: 0 2;
-        margin: 0 1 0 0;
-    }
-    ContentTab:hover {
-        color: #aaaaaa;
-    }
-    ContentTab.-active {
-        color: #44aaff;
-        text-style: bold;
-    }
-    Underline {
-        height: 0;
-    }
     #chat-log-rich { height: 1fr; padding: 0 1; }
     #chat-log-raw { height: 1fr; padding: 0 1; }
 
     #right-panel {
         width: 28;
-        border-left: solid #333333;
+        border-left: solid $primary-background;
         padding: 0;
     }
     .panel-section-title {
         text-style: bold;
         padding: 0 1;
-        color: #44aaff;
+        color: $accent;
+        background: $surface;
     }
-    #activity-log { height: 1fr; padding: 0 1; }
-    #progress-bar { height: 1; padding: 0 1; color: $warning; }
+    #activity-log {
+        height: 1fr;
+        padding: 0 1;
+    }
+    #progress-bar {
+        height: 1;
+        padding: 0 1;
+        color: $warning;
+    }
 
     /* ── Bottom bar ── */
     #input-wrapper { dock: bottom; height: auto; }
@@ -303,14 +282,15 @@ class MulAgentApp(App):
         display: none;
         height: auto; max-height: 14;
         padding: 0 1;
-        border: solid #333333; margin: 0 1;
+        background: $surface; border: solid $accent; margin: 0 1;
     }
     #cmd-popup.visible { display: block; }
     #input-bar { padding: 0 1; }
     #shortcut-bar {
         height: 1;
         padding: 0 1;
-        color: #555555;
+        color: $text-muted;
+        background: $surface;
     }
     """
 
@@ -325,22 +305,6 @@ class MulAgentApp(App):
 
     def __init__(self, runner: Any, session_id: str, **kwargs):
         super().__init__(**kwargs)
-        from textual.theme import Theme
-        self.register_theme(Theme(
-            name="mulagent-dark",
-            primary="#4488cc",
-            secondary="#666666",
-            accent="#44aaff",
-            warning="#ffaa00",
-            error="#ff4444",
-            success="#44cc44",
-            background="#000000",
-            surface="#000000",
-            panel="#000000",
-            boost="#000000",
-            dark=True,
-        ))
-        self.theme = "mulagent-dark"
         self.runner = runner
         self.session_id = session_id
         self._busy = False
@@ -364,9 +328,9 @@ class MulAgentApp(App):
         with Horizontal(id="main"):
             # Left: sessions + favorites
             with Vertical(id="left-panel"):
-                yield Static("[bold cyan]SESSIONS[/]", id="left-panel-title")
+                yield Label("SESSIONS", id="left-panel-title")
                 yield ListView(id="session-list")
-                yield Static("[bold cyan]FAVORITES[/]", id="fav-title")
+                yield Label("FAVORITES", id="fav-title")
                 yield ListView(id="fav-list")
 
             # Center: chat with tabs
@@ -382,7 +346,7 @@ class MulAgentApp(App):
 
             # Right: activity panel
             with Vertical(id="right-panel"):
-                yield Static("[bold cyan]ACTIVITY[/]", classes="panel-section-title")
+                yield Label("ACTIVITY", classes="panel-section-title")
                 yield RichLog(highlight=True, markup=True, wrap=True, id="activity-log")
                 yield Static("", id="progress-bar")
 
@@ -402,13 +366,6 @@ class MulAgentApp(App):
         self._refresh_sessions()
         self._refresh_favorites()
         self._update_top_bar()
-        # Write color test to activity log for debugging
-        activity = self.query_one("#activity-log", RichLog)
-        activity.write(RichText("Color test:", style="bold"))
-        activity.write(RichText("  CYAN", style="bold cyan"))
-        activity.write(RichText("  GREEN", style="bold green"))
-        activity.write(RichText("  RED", style="bold red"))
-        activity.write(RichText("  YELLOW", style="bold yellow"))
         self.query_one("#input-bar", Input).focus()
 
     # ── Top bar ──────────────────────────────────────────────
@@ -416,17 +373,15 @@ class MulAgentApp(App):
     def _render_top_bar(self) -> str:
         sid = self.session_id[-8:] if self.session_id else "none"
         model = getattr(self.runner, "current_model", "?")
-        parts = [
-            "[bold cyan]mul-agent[/]",
-            f"[dim]session:[/] {sid}",
-            f"[dim]model:[/] {model}",
-        ]
-        if self._last_latency:
-            parts.append(f"[dim]⏱[/] {self._last_latency:.1f}s")
-        if self._last_tokens:
-            parts.append(self._last_tokens)
+        latency = f"⏱ {self._last_latency:.1f}s" if self._last_latency else ""
+        tokens = self._last_tokens
+        parts = [f"mul-agent", f"session: {sid}", model]
+        if latency:
+            parts.append(latency)
+        if tokens:
+            parts.append(tokens)
         if self._busy:
-            parts.append("[bold yellow]● running[/]")
+            parts.append("🔄 running")
         return " │ ".join(parts)
 
     def _update_top_bar(self) -> None:
@@ -1065,10 +1020,9 @@ class MulAgentApp(App):
             for s in sessions:
                 sid = s["session_id"][-8:]
                 turns = s.get("turns", 0)
-                preview = s.get("preview", "")[:14] or "(empty)"
-                active = s["session_id"] == self.session_id
-                marker = "▸" if active else "○"
-                lv.append(ListItem(Label(f"{marker} {sid} [{turns}] {preview}")))
+                preview = s.get("preview", "")[:16] or "(empty)"
+                marker = "▸" if s["session_id"] == self.session_id else " "
+                lv.append(ListItem(Label(f"{marker}{sid} [{turns}] {preview}")))
         except NoMatches:
             pass
 
