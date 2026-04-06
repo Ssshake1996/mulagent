@@ -364,9 +364,9 @@ class MulAgentApp(App):
         with Horizontal(id="main"):
             # Left: sessions + favorites
             with Vertical(id="left-panel"):
-                yield Label("SESSIONS", id="left-panel-title")
+                yield Static("[bold cyan]SESSIONS[/]", id="left-panel-title")
                 yield ListView(id="session-list")
-                yield Label("FAVORITES", id="fav-title")
+                yield Static("[bold cyan]FAVORITES[/]", id="fav-title")
                 yield ListView(id="fav-list")
 
             # Center: chat with tabs
@@ -382,7 +382,7 @@ class MulAgentApp(App):
 
             # Right: activity panel
             with Vertical(id="right-panel"):
-                yield Label("ACTIVITY", classes="panel-section-title")
+                yield Static("[bold cyan]ACTIVITY[/]", classes="panel-section-title")
                 yield RichLog(highlight=True, markup=True, wrap=True, id="activity-log")
                 yield Static("", id="progress-bar")
 
@@ -402,6 +402,13 @@ class MulAgentApp(App):
         self._refresh_sessions()
         self._refresh_favorites()
         self._update_top_bar()
+        # Write color test to activity log for debugging
+        activity = self.query_one("#activity-log", RichLog)
+        activity.write(RichText("Color test:", style="bold"))
+        activity.write(RichText("  CYAN", style="bold cyan"))
+        activity.write(RichText("  GREEN", style="bold green"))
+        activity.write(RichText("  RED", style="bold red"))
+        activity.write(RichText("  YELLOW", style="bold yellow"))
         self.query_one("#input-bar", Input).focus()
 
     # ── Top bar ──────────────────────────────────────────────
@@ -409,15 +416,17 @@ class MulAgentApp(App):
     def _render_top_bar(self) -> str:
         sid = self.session_id[-8:] if self.session_id else "none"
         model = getattr(self.runner, "current_model", "?")
-        latency = f"⏱ {self._last_latency:.1f}s" if self._last_latency else ""
-        tokens = self._last_tokens
-        parts = [f"mul-agent", f"session: {sid}", model]
-        if latency:
-            parts.append(latency)
-        if tokens:
-            parts.append(tokens)
+        parts = [
+            "[bold cyan]mul-agent[/]",
+            f"[dim]session:[/] {sid}",
+            f"[dim]model:[/] {model}",
+        ]
+        if self._last_latency:
+            parts.append(f"[dim]⏱[/] {self._last_latency:.1f}s")
+        if self._last_tokens:
+            parts.append(self._last_tokens)
         if self._busy:
-            parts.append("🔄 running")
+            parts.append("[bold yellow]● running[/]")
         return " │ ".join(parts)
 
     def _update_top_bar(self) -> None:
