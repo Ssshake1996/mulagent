@@ -271,6 +271,8 @@ class MulAgentApp(App):
         height: 1fr;
         padding: 0 1;
         color: $foreground;
+        scrollbar-size: 0 0;
+        overflow-y: auto;
     }
     #progress-bar {
         height: 1;
@@ -355,7 +357,7 @@ class MulAgentApp(App):
             with Vertical(id="center-panel"):
                 with TabbedContent("渲染", "原始", id="chat-tabs"):
                     with TabPane("渲染", id="tab-rich"):
-                        yield RichLog(highlight=True, markup=True, wrap=True, id="chat-log-rich")
+                        yield RichLog(highlight=False, markup=True, wrap=True, id="chat-log-rich")
                     with TabPane("原始", id="tab-raw"):
                         yield TextArea(
                             "", id="chat-log-raw", read_only=True,
@@ -644,25 +646,23 @@ class MulAgentApp(App):
                     tasks = json.loads(detail)
                     done = sum(1 for t in tasks if t.get("status") == "done")
                     total = len(tasks)
-                    activity.write(RichText(f"📋 Tasks [{done}/{total}]", style="bold"))
+                    activity.write(f"Tasks [{done}/{total}]")
                     for t in tasks:
                         st = t.get("status", "pending")
-                        icon = "✅" if st == "done" else "🔄" if st == "running" else "⬜"
-                        activity.write(RichText(f"  {icon} #{t.get('id','')} {t.get('text','')[:20]}"))
+                        icon = "[x]" if st == "done" else "[~]" if st == "running" else "[ ]"
+                        activity.write(f"  {icon} #{t.get('id','')} {t.get('text','')[:20]}")
                     pct = int(done / total * 100) if total else 0
-                    filled = pct // 5
-                    bar = "█" * filled + "░" * (20 - filled)
-                    pbar.update(f"{bar} {pct}%")
+                    pbar.update(f"[{'#' * (pct // 5)}{'.' * (20 - pct // 5)}] {pct}%")
                 except Exception:
                     pass
             elif action == "tool_call" and detail:
-                activity.write(RichText(f"🔧 [{round_num}] {detail}", style="cyan"))
+                activity.write(f"[{round_num}] {detail}")
             elif action == "thinking":
-                pbar.update(f"🔄 Round {round_num} thinking...")
+                pbar.update(f"Round {round_num} thinking...")
             elif action == "step_text" and detail:
                 line = detail.strip().split("\n")[0][:40]
                 if line and not line.startswith("{"):
-                    activity.write(RichText(f"📝 {line}", style="dim"))
+                    activity.write(f"> {line}")
             return None
 
         try:
@@ -678,12 +678,9 @@ class MulAgentApp(App):
 
             # Final activity entry
             activity = self.query_one("#activity-log", RichLog)
-            activity.write(RichText(
-                f"\n{'✅' if status == 'completed' else '⚠️'} {status} │ {elapsed:.1f}s │ {len(tools_used)} tools",
-                style="bold green" if status == "completed" else "bold yellow",
-            ))
+            activity.write(f"\n{status} | {elapsed:.1f}s | {len(tools_used)} tools")
             self.query_one("#progress-bar", Static).update(
-                f"{'█' * 20} 100%" if status == "completed" else f"⚠️ {status}"
+                f"[{'#' * 20}] 100%" if status == "completed" else f"! {status}"
             )
 
         except asyncio.CancelledError:
@@ -691,7 +688,7 @@ class MulAgentApp(App):
         except Exception as e:
             self._write_chat("Error", str(e))
             activity = self.query_one("#activity-log", RichLog)
-            activity.write(RichText(f"❌ {e}", style="bold red"))
+            activity.write(f"ERROR: {e}")
         finally:
             self._busy = False
             self._refresh_sessions()
