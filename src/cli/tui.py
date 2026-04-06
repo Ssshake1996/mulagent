@@ -222,6 +222,7 @@ class MulAgentApp(App):
         width: 24;
         border-right: solid $surface-lighten-1;
         padding: 0;
+        overflow: hidden;
     }
     #left-panel-title {
         text-style: bold;
@@ -250,7 +251,7 @@ class MulAgentApp(App):
     }
     #fav-list > ListItem { padding: 0 1; }
 
-    #center-panel { width: 1fr; }
+    #center-panel { width: 1fr; overflow: hidden; }
     TabbedContent { height: 1fr; }
     TabbedContent ContentSwitcher { height: 1fr; }
     TabPane { height: 1fr; padding: 0; }
@@ -261,6 +262,7 @@ class MulAgentApp(App):
         width: 28;
         border-left: solid $surface-lighten-1;
         padding: 0;
+        overflow: hidden;
     }
     .panel-section-title {
         text-style: bold;
@@ -271,7 +273,7 @@ class MulAgentApp(App):
         height: 1fr;
         padding: 0 1;
         color: $foreground;
-        scrollbar-size: 0 0;
+        overflow-x: hidden;
         overflow-y: auto;
     }
     #progress-bar {
@@ -357,7 +359,7 @@ class MulAgentApp(App):
             with Vertical(id="center-panel"):
                 with TabbedContent("渲染", "原始", id="chat-tabs"):
                     with TabPane("渲染", id="tab-rich"):
-                        yield RichLog(highlight=False, markup=True, wrap=True, id="chat-log-rich")
+                        yield RichLog(highlight=True, markup=True, wrap=True, id="chat-log-rich")
                     with TabPane("原始", id="tab-raw"):
                         yield TextArea(
                             "", id="chat-log-raw", read_only=True,
@@ -646,23 +648,25 @@ class MulAgentApp(App):
                     tasks = json.loads(detail)
                     done = sum(1 for t in tasks if t.get("status") == "done")
                     total = len(tasks)
-                    activity.write(f"Tasks [{done}/{total}]")
+                    activity.write(RichText(f"* Tasks [{done}/{total}]", style="bold"))
                     for t in tasks:
                         st = t.get("status", "pending")
-                        icon = "[x]" if st == "done" else "[~]" if st == "running" else "[ ]"
-                        activity.write(f"  {icon} #{t.get('id','')} {t.get('text','')[:20]}")
+                        icon = "+" if st == "done" else "~" if st == "running" else "-"
+                        activity.write(RichText(f"  {icon} #{t.get('id','')} {t.get('text','')[:20]}"))
                     pct = int(done / total * 100) if total else 0
-                    pbar.update(f"[{'#' * (pct // 5)}{'.' * (20 - pct // 5)}] {pct}%")
+                    filled = pct // 5
+                    bar = "#" * filled + "." * (20 - filled)
+                    pbar.update(f"[{bar}] {pct}%")
                 except Exception:
                     pass
             elif action == "tool_call" and detail:
-                activity.write(f"[{round_num}] {detail}")
+                activity.write(RichText(f"> [{round_num}] {detail}", style="cyan"))
             elif action == "thinking":
-                pbar.update(f"Round {round_num} thinking...")
+                pbar.update(f"* Round {round_num} thinking...")
             elif action == "step_text" and detail:
                 line = detail.strip().split("\n")[0][:40]
                 if line and not line.startswith("{"):
-                    activity.write(f"> {line}")
+                    activity.write(RichText(f"  {line}", style="dim"))
             return None
 
         try:
@@ -678,7 +682,10 @@ class MulAgentApp(App):
 
             # Final activity entry
             activity = self.query_one("#activity-log", RichLog)
-            activity.write(f"\n{status} | {elapsed:.1f}s | {len(tools_used)} tools")
+            activity.write(RichText(
+                f"\n{status} | {elapsed:.1f}s | {len(tools_used)} tools",
+                style="bold green" if status == "completed" else "bold yellow",
+            ))
             self.query_one("#progress-bar", Static).update(
                 f"[{'#' * 20}] 100%" if status == "completed" else f"! {status}"
             )
@@ -688,7 +695,7 @@ class MulAgentApp(App):
         except Exception as e:
             self._write_chat("Error", str(e))
             activity = self.query_one("#activity-log", RichLog)
-            activity.write(f"ERROR: {e}")
+            activity.write(RichText(f"ERROR: {e}", style="bold red"))
         finally:
             self._busy = False
             self._refresh_sessions()
