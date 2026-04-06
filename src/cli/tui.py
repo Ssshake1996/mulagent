@@ -205,15 +205,12 @@ class MulAgentApp(App):
     """mul-agent Terminal UI — three-panel layout."""
 
     TITLE = "mul-agent"
-    # Use tokyo-night: dark but readable, good contrast
-    theme = "tokyo-night"
 
     CSS = """
     /* ── Top bar ── */
     #top-bar {
         height: 1;
-        background: $primary;
-        color: $text;
+        color: $accent;
         padding: 0 2;
         text-style: bold;
     }
@@ -223,14 +220,13 @@ class MulAgentApp(App):
 
     #left-panel {
         width: 24;
-        border-right: solid $primary-background;
+        border-right: solid $surface-lighten-1;
         padding: 0;
     }
     #left-panel-title {
         text-style: bold;
         padding: 0 1;
         color: $accent;
-        background: $surface;
     }
     #session-list {
         height: 1fr;
@@ -245,8 +241,7 @@ class MulAgentApp(App):
         text-style: bold;
         padding: 0 1;
         color: $accent;
-        background: $surface;
-        border-top: solid $primary-background;
+        border-top: solid $surface-lighten-1;
     }
     #fav-list {
         height: auto;
@@ -259,23 +254,23 @@ class MulAgentApp(App):
     TabbedContent { height: 1fr; }
     TabbedContent ContentSwitcher { height: 1fr; }
     TabPane { height: 1fr; padding: 0; }
-    #chat-log-rich { height: 1fr; padding: 0 1; }
-    #chat-log-raw { height: 1fr; padding: 0 1; }
+    #chat-log-rich { height: 1fr; padding: 0 1; color: $foreground; }
+    #chat-log-raw { height: 1fr; padding: 0 1; color: $foreground; }
 
     #right-panel {
         width: 28;
-        border-left: solid $primary-background;
+        border-left: solid $surface-lighten-1;
         padding: 0;
     }
     .panel-section-title {
         text-style: bold;
         padding: 0 1;
         color: $accent;
-        background: $surface;
     }
     #activity-log {
         height: 1fr;
         padding: 0 1;
+        color: $foreground;
     }
     #progress-bar {
         height: 1;
@@ -289,7 +284,7 @@ class MulAgentApp(App):
         display: none;
         height: auto; max-height: 14;
         padding: 0 1;
-        background: $surface; border: solid $accent; margin: 0 1;
+        border: solid $surface-lighten-1; margin: 0 1;
     }
     #cmd-popup.visible { display: block; }
     #input-bar { padding: 0 1; }
@@ -297,7 +292,6 @@ class MulAgentApp(App):
         height: 1;
         padding: 0 1;
         color: $text-muted;
-        background: $surface;
     }
     """
 
@@ -312,6 +306,23 @@ class MulAgentApp(App):
 
     def __init__(self, runner: Any, session_id: str, **kwargs):
         super().__init__(**kwargs)
+        from textual.theme import Theme
+        self.register_theme(Theme(
+            name="mulagent",
+            primary="#888888",
+            secondary="#555555",
+            accent="#6699cc",
+            warning="#ccaa00",
+            error="#cc4444",
+            success="#44aa44",
+            background="#000000",
+            surface="#111111",
+            panel="#111111",
+            boost="#0a0a0a",
+            foreground="#e0e0e0",
+            dark=True,
+        ))
+        self.theme = "mulagent"
         self.runner = runner
         self.session_id = session_id
         self._busy = False
@@ -354,7 +365,7 @@ class MulAgentApp(App):
             # Right: activity panel
             with Vertical(id="right-panel"):
                 yield Label("ACTIVITY", classes="panel-section-title")
-                yield RichLog(highlight=True, markup=True, wrap=True, id="activity-log")
+                yield RichLog(highlight=False, markup=True, wrap=True, id="activity-log")
                 yield Static("", id="progress-bar")
 
         # ── Bottom: input + shortcuts ──
