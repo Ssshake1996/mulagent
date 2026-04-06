@@ -13,8 +13,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
+
+# Ensure truecolor support before any Textual import caches terminal capabilities.
+# Many terminals (SSH, tmux, VS Code) report TERM=xterm (8-color) but actually
+# support 256/truecolor. Without this, colors are mapped to nearest 8-color value.
+if os.environ.get("TERM") in ("xterm", "screen", "vt100", ""):
+    os.environ["TERM"] = "xterm-256color"
+if not os.environ.get("COLORTERM"):
+    os.environ["COLORTERM"] = "truecolor"
 
 from cli import ensure_src_path
 
