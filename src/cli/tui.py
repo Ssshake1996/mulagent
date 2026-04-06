@@ -255,8 +255,28 @@ class MulAgentApp(App):
     TabbedContent { height: 1fr; }
     TabbedContent ContentSwitcher { height: 1fr; }
     TabPane { height: 1fr; padding: 0; }
-    #chat-log-rich { height: 1fr; padding: 0 1; color: $foreground; }
+    #chat-log-rich {
+        height: 1fr;
+        padding: 0 1;
+        color: $foreground;
+        scrollbar-size-vertical: 1;
+    }
     #chat-log-raw { height: 1fr; padding: 0 1; color: $foreground; }
+
+    /* ── Tab buttons ── */
+    ContentTab {
+        padding: 0 2;
+        border: tall $surface-lighten-2;
+        margin: 0 1 0 0;
+    }
+    ContentTab:hover {
+        border: tall $accent;
+    }
+    ContentTab.-active {
+        border: tall $accent;
+        color: $accent;
+        text-style: bold;
+    }
 
     #right-panel {
         width: 28;
