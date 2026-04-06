@@ -205,6 +205,9 @@ class MulAgentApp(App):
     """mul-agent Terminal UI — three-panel layout."""
 
     TITLE = "mul-agent"
+    # Use tokyo-night: dark but readable, good contrast
+    theme = "tokyo-night"
+
     CSS = """
     /* ── Top bar ── */
     #top-bar {
@@ -233,7 +236,11 @@ class MulAgentApp(App):
         height: 1fr;
         overflow-y: auto;
     }
-    #session-list > ListItem { padding: 0 1; }
+    #session-list > ListItem {
+        padding: 0 1;
+        color: $accent;
+        text-style: underline;
+    }
     #fav-title {
         text-style: bold;
         padding: 0 1;
