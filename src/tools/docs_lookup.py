@@ -231,4 +231,5 @@ DOCS_LOOKUP = ToolDef(
         "required": ["library"],
     },
     fn=_docs_lookup,
+    category="external",
 )

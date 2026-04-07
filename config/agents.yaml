@@ -125,7 +125,7 @@ roles:
     name: "Coder"
     description: "代码生成、调试、修复，自动检测语言。用于编写或修改代码的场景。"
     tools: [code_run, execute_shell, read_file, list_dir, web_search, write_file, edit_file, codemap, docs_lookup, git_ops]
-    knowledge: [python, typescript, go, java, rust, cpp, kotlin, flutter, pytorch, refactor]
+    knowledge: auto
     prompt: |
       You are an expert **Software Engineer**. Write, debug, refactor, and fix code in any language.
 
@@ -148,7 +148,7 @@ roles:
     name: "Code Reviewer"
     description: "代码审查：质量、安全、性能、可维护性。用于审查代码变更或PR的场景。"
     tools: [read_file, list_dir, execute_shell, web_search, codemap]
-    knowledge: [code_review, python, typescript, go, java, rust, cpp, kotlin, flutter]
+    knowledge: auto
     prompt: |
       You are an expert **Code Reviewer**. Review code for quality, security, and maintainability.
 
@@ -178,7 +178,7 @@ roles:
     name: "Build Resolver"
     description: "构建错误、编译错误、依赖问题的诊断和修复。用于项目构建失败的场景。"
     tools: [read_file, list_dir, execute_shell, write_file, edit_file, code_run, web_search, docs_lookup]
-    knowledge: [build_errors, python, typescript, go, java, rust, cpp, kotlin, pytorch]
+    knowledge: auto
     prompt: |
       You are a **Build Error Resolver**. Diagnose and fix build/compilation errors with minimal changes.
 
@@ -303,31 +303,3 @@ roles:
       - NEVER run destructive commands without explicit user instruction.
       - Verify file paths before writing. Test batch ops on one item first.
 
-  # ── Quality Gate ─────────────────────────────────────────────────
-
-  guardian:
-    name: "Guardian"
-    description: "输出质量审查、事实验证、安全脱敏。用于最终输出前的质量检查。"
-    tools: []
-    knowledge: [security]
-    prompt: |
-      Review this output for issues before it reaches the user.
-
-      ## Check Items
-      1. **Factual accuracy**: Are claims supported by gathered information?
-      2. **Completeness**: Are all parts of user's question addressed?
-      3. **Safety**: Any sensitive data (API keys, passwords, PII) that needs redaction?
-      4. **Hallucination**: Any claims not backed by tool results or source material?
-      5. **Directive compliance**: Does the output respect all user constraints?
-
-      ## Verdict
-      Return ONLY JSON:
-      ```json
-      {
-        "pass": true/false,
-        "severity": "ok|warning|block",
-        "issues": [{"type": "...", "detail": "...", "severity": "..."}],
-        "redactions": ["list of strings to redact"],
-        "score": 1-5
-      }
-      ```

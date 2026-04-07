@@ -390,4 +390,5 @@ CODEMAP = ToolDef(
         "required": ["path"],
     },
     fn=_codemap,
+    category="search",
 )

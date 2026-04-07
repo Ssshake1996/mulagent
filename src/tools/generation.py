@@ -258,6 +258,7 @@ EXECUTE_SHELL = ToolDef(
         "required": ["command"],
     },
     fn=_execute_shell,
+    category="execution",
 )
 
 CODE_RUN = ToolDef(
@@ -286,6 +287,7 @@ CODE_RUN = ToolDef(
         "required": ["code"],
     },
     fn=_code_run,
+    category="execution",
 )
 
 async def _edit_file(params: dict[str, Any], **deps: Any) -> str:
@@ -416,6 +418,7 @@ EDIT_FILE = ToolDef(
         "required": ["path", "old_text", "new_text"],
     },
     fn=_edit_file,
+    category="file",
 )
 
 
@@ -437,4 +440,5 @@ WRITE_FILE = ToolDef(
         "required": ["path", "content"],
     },
     fn=_write_file,
+    category="file",
 )

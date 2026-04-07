@@ -105,31 +105,75 @@ def detect_injection(text: str) -> list[str]:
 
 # ── Tool Hooks (Pre/Post) ────────────────────────────────────────────
 
+# Directive semantic classification: map keyword patterns → operation types
+_DIRECTIVE_CATEGORIES: dict[str, list[str]] = {
+    "destructive": ["删除", "删掉", "清空", "移除", "rm ", "drop ", "truncate", "确认", "同意", "审批", "批准"],
+    "modify": ["修改", "改", "写入", "覆盖", "替换", "重命名"],
+    "send": ["发送", "推送", "push", "deploy", "发布", "上线"],
+    "scope": ["只", "仅", "不要", "不能", "禁止", "不许", "only", "never", "don't"],
+}
+
+# Tools that correspond to each operation type
+_TOOL_OP_MAP: dict[str, set[str]] = {
+    "destructive": {"execute_shell", "write_file", "edit_file", "git_ops"},
+    "modify": {"write_file", "edit_file", "execute_shell"},
+    "send": {"execute_shell", "git_ops", "github_ops"},
+    "scope": set(),  # scope directives apply to all tools (checked separately)
+}
+
+
+def _classify_directive(directive: str) -> list[str]:
+    """Classify a directive into operation types based on keyword matching."""
+    d_lower = directive.lower()
+    categories = []
+    for cat, keywords in _DIRECTIVE_CATEGORIES.items():
+        if any(kw in d_lower for kw in keywords):
+            categories.append(cat)
+    return categories
+
+
 def pre_tool_hook(tool_name: str, args: dict, directives: list[str]) -> str | None:
     """Pre-execution hook: check if tool call violates any directive.
 
-    Runs both directive checks and user-configured shell hooks.
+    Uses semantic classification to only check directives relevant to the
+    current tool's operation type, reducing false positives.
+
     Returns an error message if blocked, None if allowed.
     """
     args_str = str(args).lower()
 
     for directive in directives:
-        d_lower = directive.lower()
+        categories = _classify_directive(directive)
 
-        # Block destructive operations if directive requires confirmation
-        if any(kw in d_lower for kw in ["确认", "同意", "审批", "批准"]):
-            destructive_patterns = ["rm ", "rm -", "delete", "drop ", "truncate ",
-                                    "rmdir", "del ", "remove"]
-            if tool_name in ("execute_shell", "write_file"):
+        for cat in categories:
+            relevant_tools = _TOOL_OP_MAP.get(cat, set())
+            # scope directives apply to all tools
+            if cat == "scope":
+                logger.debug("Directive scope check for '%s': %s", tool_name, directive)
+                continue
+
+            # Skip if this directive category doesn't apply to the current tool
+            if relevant_tools and tool_name not in relevant_tools:
+                continue
+
+            # Destructive: check args for destructive patterns
+            if cat == "destructive":
+                destructive_patterns = ["rm ", "rm -", "delete", "drop ", "truncate ",
+                                        "rmdir", "del ", "remove"]
                 if any(p in args_str for p in destructive_patterns):
                     return (
                         f"[BLOCKED] Directive requires user confirmation for destructive operations: "
                         f"'{directive}'. Skipping {tool_name} with args that contain destructive commands."
                     )
 
-        # Block scope violations
-        if "只" in d_lower or "仅" in d_lower or "不要" in d_lower:
-            logger.debug("Directive scope check for '%s': %s", tool_name, directive)
+            # Send: check for push/deploy actions
+            if cat == "send":
+                send_patterns = ["push", "deploy", "publish", "发布", "上线"]
+                if any(p in args_str for p in send_patterns):
+                    return (
+                        f"[CONFIRM_REQUIRED] Directive restricts send/deploy operations: "
+                        f"'{directive}'. {tool_name} requires confirmation."
+                    )
 
     # ── User-configured shell hooks ──
     result = _run_user_hook("pre", tool_name, args)

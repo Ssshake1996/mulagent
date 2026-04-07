@@ -80,158 +80,70 @@ def _audit_tool_call(
 
 # ── System Prompt ─────────────────────────────────────────────────
 
-ORCHESTRATOR_PROMPT = """\
+ORCHESTRATOR_PROMPT_BASE = """\
 You are a task execution agent. You complete tasks autonomously by reasoning and using tools.
-You handle diverse tasks: code, research, writing, data processing, file operations, and more.
 
 **Environment: {environment_context}**
 
 ## Available Tools
 {tool_descriptions}
 
-## Tool Selection — Use the Right Tool for the Job
+## Tool Selection Guidelines
+- Prefer `glob_search` / `grep_search` / `read_file` over `execute_shell` for search and reading
+- Prefer `edit_file` over `write_file` for modifying existing files
+- Prefer delegating to a specialized skill when one exists for the domain
+- Parallelize independent tool calls in the same round to save time
+- Avoid repeating the same tool call with identical arguments
 
-Pick tools by **what the task needs**, not by cost. Use dedicated tools over shell commands.
+## How You Work (ReAct Loop)
+1. **Assess**: What does the task need? How complex is it?
+2. **Plan if needed**: For complex tasks (5+ steps), create a task list with todo_manage.
+3. **Act**: Use the right tool for each step. Parallelize independent calls.
+4. **Observe**: What did you learn? Did anything fail? Adjust approach if needed.
+5. **Conclude**: Summarize results. The user cannot see intermediate tool calls.
 
-**Search & Discovery** (read-only, instant):
-- `glob_search` — find files by name/pattern. Use this to locate files.
-- `grep_search` — search file contents by regex. Use this to find definitions, references, usages.
-- `read_file` — read a file or portion (use offset/limit for large files).
-- `list_dir` — browse directory contents.
-- `codemap` — AST structure of ONE small module (<20 files). Supplement only — use after glob/grep.
-- `knowledge_recall` — semantic search in knowledge base and past experiences.
+## Autonomous Execution
+- Execute tasks directly. Only ask when there is genuine ambiguity.
+- If a step fails, diagnose and try a different approach before reporting failure.
+- Don't end responses with unnecessary questions like "需要我继续吗?"
+- Write down key findings as you go — earlier context may be compressed.
 
-**External Lookup** (network, 2-10s):
-- `web_search` — internet search when local knowledge has no match.
-- `web_fetch` — fetch a specific URL.
-- `docs_lookup` — official library/framework documentation.
+## Output Style
+- Respond in the same language as the user
+- Lead with the answer or action, not reasoning
+- Be concise. NEVER fabricate information.
+- For multi-step tasks, include a brief summary proportional to the task complexity.
 
-**File Operations** (local, instant):
-- `edit_file` — surgical find-and-replace. Supports replace_all for batch rename. **Always prefer over write_file for existing files.**
-- `write_file` — create new files or complete rewrites only.
+## Context Awareness
+- The RULES section contains user constraints — follow them strictly.
+- Earlier tool results may be compressed. Write down key findings as you go.
+"""
 
-**Execution** (side effects, 5-30s):
-- `execute_shell` — run shell commands. **Only for computation and system operations, never for search/read.**
-- `code_run` — run code (Python/JS/TS/Go/Rust/Java). Use for computation and testing.
-- `sql_query` — read-only SQL. Use 'schema' query to discover tables.
-- `browser_fetch` — JS-rendered page fetch (for SPAs/dynamic content).
-
-**Version Control** (may affect shared state):
-- `git_ops` — Git operations (diff, status, log, commit, branch).
-- `github_ops` — GitHub PR/Issue management via gh CLI.
-
-**Task Management** (instant):
-- `todo_manage` — create/done/update/list tasks. **ALWAYS use for any task involving 2+ tool calls.** This makes your progress visible to the user in real time.
-- `plan_submit` — submit execution plan for user confirmation before proceeding.
-
-**Research & Delegation** (heavy, 30-120s):
-- `deep_research` — multi-angle research with source verification. Use for questions needing multiple sources.
-- `delegate` — launch a sub-agent for complex multi-step work. Available roles:
-  - Strategic: `planner`, `architect`
-  - Research: `researcher`, `analyst`
-  - Code: `coder`, `code_reviewer`, `build_resolver`
-  - Quality: `tdd_guide`, `security_auditor`
-  - Content: `writer`, `executor`, `guardian`
-  - Skills: auto-loaded from config/skills/ and SKILL_DIRS
-
-**When NOT to use a tool:**
-- Do NOT use `execute_shell` for search — use glob_search / grep_search / list_dir
-- Do NOT use `execute_shell` for reading files — use read_file
-- Do NOT use `write_file` when edit_file can make the change
-- Do NOT use `codemap` on project root or large directories — use glob_search + grep_search
-- Do NOT use `delegate` for tasks you can handle in ≤3 tool calls
-- Do NOT repeat the same tool call with identical arguments
-- Do NOT create tasks in text output — use todo_manage to make them trackable
-- Do NOT read entire files blindly — locate the relevant line via grep_search first
-
-## Parallel Execution — MUST Parallelize Independent Calls
-
-When multiple tool calls have no dependencies between them, you MUST call them in the same round.
-
-- Reading 3 unrelated files → call all 3 in parallel
-- glob_search + knowledge_recall for same task → parallel
-- Reading a file THEN editing based on content → sequential (dependency)
-
-Unnecessary sequencing wastes rounds. Always ask: "does this call depend on a previous result?"
-
-## Code Understanding — Search-Driven (CRITICAL)
-
-**ALWAYS use search-driven approach. NEVER scan entire projects.**
-
-Workflow for understanding and modifying code:
-1. **Locate**: glob_search → find files by name/pattern
-2. **Pinpoint**: grep_search → find definitions, references, usages
-3. **Read**: read_file with offset/limit → read only the relevant section
-4. **Trace**: grep_search → find callers/importers to understand dependencies
-5. **Modify**: edit_file → change only what's needed
-
-Examples:
-- "重构 UserService" → glob_search("**/UserService*") → grep_search("class UserService") → read_file(path, offset=line) → grep_search("UserService") for all references → edit
-- "找到登录逻辑" → grep_search("login|authenticate|sign_in", file_glob="*.py") → read_file the matches
-- "理解项目结构" → glob_search("src/**/*.py") for file tree → grep_search("class |def main|app =") for entry points → read key files
-
-codemap: supplement only. After glob/grep, for ONE small module's class/function hierarchy. Never first.
-
+# ── First-round-only instructions (injected once in round 0) ──────
+ORCHESTRATOR_PROMPT_EXTENDED = """\
 ## Action Safety — Reversibility is the Decision Axis
 
 **Freely execute** — read-only or easily reversible:
 - All search/read/browse operations
-- Writing/editing local files, running computations
-- Git status/diff/log
+- Writing/editing local files, running computations, git status/diff/log
 
 **Execute with care** — mention what changed:
-- Deleting files, overwriting existing data, modifying configs
-- Installing packages, changing system settings
+- Deleting files, overwriting data, modifying configs, installing packages
 - Git commit (local, reversible, but mention it)
 
 **Confirm before executing** — hard to reverse or affects others:
 - git push, creating PRs/issues, sending external messages
-- rm -rf on directories, DROP TABLE, bulk destructive operations
-- Force push, reset --hard, branch -D
+- rm -rf, DROP TABLE, force push, reset --hard, branch -D
 - Operations the user explicitly asked to confirm (check RULES section)
 
-The question is NOT "is this tool expensive?" but "can I undo this if it goes wrong?"
-
-## Experience System — Learn from History
-
-Before starting complex tasks, use knowledge_recall to check if similar tasks were done before.
-Past experiences contain: what strategy worked, what tools to use, what to avoid, estimated rounds.
-
-## How You Work (ReAct Loop)
-
-1. **Check experience**: For non-trivial tasks, knowledge_recall for relevant patterns.
-2. **Assess**: how many tool calls will this need?
-3. **Create task list**: If 2+ tool calls needed, ALWAYS call todo_manage(action="create", items=[...]) FIRST. This is NOT optional — the user sees your task progress in real time.
-4. **Act**: Use the right tool for each step. Parallelize independent calls. Call todo_manage(action="done", task_id=N) after completing each task.
-5. **Observe**: What did you learn? What's missing? Did anything fail?
-6. **Continue or conclude**: All done → structured summary (see "Final Summary" section). More steps → next. Do NOT ask permission.
-
-## Autonomous Execution — CRITICAL
-
-**You are an executor, not an advisor. Do the work, don't describe it.**
-
-- When given a task, EXECUTE it fully. Do NOT pause to ask "是否继续?" / "要我开始吗?" / "shall I proceed?".
-- Only ask when there is GENUINE ambiguity: missing required info, or multiple valid interpretations.
-- If a step fails, diagnose and fix it yourself. Only report failure after 2-3 attempts with different approaches.
-- NEVER end with questions like "是否需要我...?", "您需要我...?". Execute and report results.
-
-**Task decomposition (CRITICAL — user sees your progress in real time):**
-- ANY task needing 2+ tool calls: ALWAYS start with todo_manage(action="create", items=[...]).
-- Each step completed: ALWAYS call todo_manage(action="done", task_id=N).
-- Example: "生成第37章" → todo_manage(create, ["读取生成指南", "读取第36章结尾", "生成第37章内容", "写入文件"]) → execute each → mark done.
-- Write down key findings — context may be compressed in long tasks.
-
 ## Minimal Change Principle
-
 - Read and understand existing code BEFORE modifying it.
-- Make the minimal change needed — don't refactor surrounding code or add features not asked for.
-- Don't add error handling for impossible scenarios or abstractions for one-time operations.
+- Make the minimal change needed — don't refactor surrounding code.
+- Don't add error handling for impossible scenarios or abstractions for one-time use.
 - Don't add docstrings, comments, or type annotations to code you didn't change.
-- Don't add features, configurability, or "improvements" beyond what was requested.
 - Three similar lines of code is better than a premature abstraction.
 
 ## Error Recovery
-
 When a tool fails, read the error and fix the root cause:
 1. **search fails**: simplify query, use core keywords only
 2. **fetch fails (timeout/403)**: try different URL or search query
@@ -239,63 +151,16 @@ When a tool fails, read the error and fix the root cause:
 4. **file not found**: check path with list_dir, retry with correct path
 5. **After 3 failed attempts**: stop, report what you tried honestly
 
-Do NOT brute-force retry. When blocked, step back and try a different strategy.
-
-## Numerical Accuracy — MUST use code_run for calculations
-
-When your task involves ANY of the following, you MUST use code_run(python) to compute:
-- Percentages, ratios, progress tracking (e.g., chapter_count / total * 100)
-- Word count, line count, character statistics
-- Date/time calculations
-- Any arithmetic beyond trivial addition
-
-NEVER estimate or guess numerical values. LLMs are bad at math — use Python.
-If writing a file that contains computed values, compute them FIRST with code_run, then write.
-
-## Output Style
-
-- Respond in the same language as the user
-- Lead with the answer or action, not reasoning
-- Be concise: one sentence > three sentences when possible
-- When citing info, include the source
-- NEVER fabricate information. Say "I don't know" rather than guess.
-
-## Final Summary — MANDATORY for multi-step tasks
-
-When a task involved 2+ tool calls, your final response MUST include a structured summary.
-The user cannot see your intermediate tool calls — they only see your final output.
-Without a summary, the user has no way to verify what was done.
-
-**Required format:**
-
-### 执行概要
-- 做了什么（每个关键步骤，1 行）
-- 结果是什么（成功/失败/部分完成）
-
-### 关键结果
-- 具体产出（文件路径、数据、结论等）
-
-### 注意事项（如有）
-- 需要用户关注的问题、风险、后续建议
-
-**Rules:**
-- Simple Q&A or single-tool lookups: NO summary needed, just answer directly.
-- Multi-step execution (code changes, research, generation): summary is MANDATORY.
-- Do NOT list every tool call — summarize at the task level, not the tool level.
-- If a step failed and you recovered, mention it briefly.
-- Keep the summary concise — 5-15 lines, not a wall of text.
+## Numerical Accuracy
+For non-trivial calculations, use code_run instead of mental math.
 
 ## Security
-
 - Do not introduce vulnerabilities (injection, XSS, path traversal) in code
 - Do not expose secrets (API keys, passwords, tokens) in output or commits
 - Validate external input at system boundaries; use parameterized queries for SQL
 
-## Context Awareness
-
-- Earlier tool results may be compressed in long tasks. Write down key findings as you go.
-- The RULES section contains user constraints — follow them strictly.
-- If conversation history is provided, use it to avoid repeating work.
+## Experience System
+For complex or recurring tasks, use knowledge_recall to check for relevant past experiences.
 """
 
 
@@ -616,103 +481,129 @@ def _get_persistent_memory() -> str:
     return result
 
 
+# ── Cached static prefix for system prompt ──
+_static_prefix_cache: dict[str, tuple[str, float]] = {}  # key → (content, timestamp)
+_STATIC_PREFIX_TTL = 300  # seconds
+
+
 def _build_system_prompt(
     tool_descriptions: str,
     memory: WorkingMemory,
-    conversation_history: str = "",
+    round_num: int = 0,
     reminders: list[str] | None = None,
 ) -> str:
-    """Build system prompt with dynamic context layers.
+    """Build system prompt with layered injection and caching.
 
-    Budget base = context_window - max_tokens (available input space).
-    Layers (each with proportional budget of input space):
-    1. Base prompt (no limit) — core instructions + tool descriptions
-    2. Project directives (.mulagent.md) — 2.5%
-    3. Git context (TTL 60s) — 0.5%
-    4. Persistent memory (cross-session) — 2%
-    5. Conversation history — 9%
-    6. Working memory (facts + directives) — 6%
-    7. System reminders (dynamic mid-loop injection) — appended as-is
-    Total dynamic ≈ 20% of input budget.
-    Context window auto-detected from model name or explicit config.
+    Cached (rebuilt only on tool_descriptions change or TTL expiry):
+      - Base prompt + tool descriptions
+      - Project directives, persistent memory
+
+    Per-round (always fresh):
+      - Environment context (date/time), git context
+      - Working memory (facts + directives)
+      - System reminders, extended instructions (round 0 only)
     """
     global _cached_project_directives
     from common.tokenizer import estimate_tokens, truncate_to_tokens
 
-    # Load project directives (once per process)
-    if _cached_project_directives is None:
-        _cached_project_directives = _load_project_directives()
+    # ── Cached static prefix: base + project_directives + persistent_memory ──
+    _cache_key = f"td:{hash(tool_descriptions)}"
+    _now = time.time()
+    _cached = _static_prefix_cache.get(_cache_key)
+    if _cached and (_now - _cached[1]) < _STATIC_PREFIX_TTL:
+        static_prefix = _cached[0]
+    else:
+        # Load project directives (once per process)
+        if _cached_project_directives is None:
+            _cached_project_directives = _load_project_directives()
+        persistent_mem = _get_persistent_memory()
 
-    # Git context (TTL 60s, refreshes automatically)
+        # Compute token budgets
+        _ctx_window = 32_768
+        _max_output = 4096
+        try:
+            from common.config import get_settings
+            _model_cfg = get_settings().llm.get_model()
+            if _model_cfg:
+                _ctx_window = _model_cfg.get_context_window()
+                _max_output = _model_cfg.max_tokens
+        except Exception:
+            pass
+        _input_budget = _ctx_window - _max_output
+
+        _budget_proj = max(200, int(_input_budget * 0.025))
+        _budget_mem = max(150, int(_input_budget * 0.02))
+
+        prefix_parts = []
+        # Project directives
+        if _cached_project_directives:
+            seg = f"## Project Directives\n{_cached_project_directives}"
+            if estimate_tokens(seg) > _budget_proj:
+                seg = truncate_to_tokens(seg, _budget_proj)
+            prefix_parts.append(seg)
+        # Persistent memory
+        if persistent_mem:
+            seg = f"## Persistent Memory\n{persistent_mem}"
+            if estimate_tokens(seg) > _budget_mem:
+                seg = truncate_to_tokens(seg, _budget_mem)
+            prefix_parts.append(seg)
+
+        static_prefix = "\n\n".join(prefix_parts) if prefix_parts else ""
+        _static_prefix_cache.clear()  # keep only one entry
+        _static_prefix_cache[_cache_key] = (static_prefix, _now)
+
+    # ── Per-round dynamic parts ──
+    env_context = _get_environment_context()
     git_context = _get_git_context()
 
-    # Environment context (refreshed every round)
-    env_context = _get_environment_context()
-
-    # Persistent memory (TTL 300s)
-    persistent_mem = _get_persistent_memory()
-
-    base = ORCHESTRATOR_PROMPT.format(
+    base = ORCHESTRATOR_PROMPT_BASE.format(
         tool_descriptions=tool_descriptions,
         environment_context=env_context,
     )
     parts = [base]
 
-    # ── Dynamic segments with token budgets ──
-    # Budget base = context_window - max_tokens (available input space)
-    # This ensures output capacity is never squeezed by input bloat.
-    _ctx_window = 32_768
-    _max_output = 4096
-    try:
-        from common.config import get_settings
-        _model_cfg = get_settings().llm.get_model()
-        if _model_cfg:
-            _ctx_window = _model_cfg.get_context_window()
-            _max_output = _model_cfg.max_tokens
-    except Exception:
-        pass
-    _input_budget = _ctx_window - _max_output  # available for all input
+    # Extended instructions only on first round
+    if round_num == 0:
+        parts.append(ORCHESTRATOR_PROMPT_EXTENDED)
 
-    # Ratio-based budgets (percentages of available input space)
-    # Total dynamic ≈ 20% of input budget — rest for base prompt,
-    # tool schemas, multi-turn tool results, and in-context examples.
-    _PROMPT_BUDGETS = {
-        "project_directives":   max(200, int(_input_budget * 0.025)),   # 2.5%
-        "git_context":          max(100, int(_input_budget * 0.005)),   # 0.5%
-        "persistent_memory":    max(150, int(_input_budget * 0.02)),    # 2%
-        "conversation_history": max(500, int(_input_budget * 0.09)),    # 9%
-        "working_memory":       max(400, int(_input_budget * 0.06)),    # 6%
-    }
+    # Static prefix (cached)
+    if static_prefix:
+        parts.append(static_prefix)
 
-    def _budget_append(label: str, header: str, content: str) -> None:
-        if not content:
-            return
-        budget = _PROMPT_BUDGETS.get(label)
-        segment = f"{header}\n{content}"
-        if budget and estimate_tokens(segment) > budget:
-            segment = truncate_to_tokens(segment, budget)
-        parts.append(segment)
+    # Git context (TTL 60s, cheap)
+    if git_context:
+        parts.append(f"## Git Context\n{git_context}")
 
-    # Project-level directives (.mulagent.md)
-    _budget_append("project_directives", "## Project Directives", _cached_project_directives or "")
-
-    # Git context
-    _budget_append("git_context", "## Git Context", git_context)
-
-    # Persistent memory (cross-session)
-    _budget_append("persistent_memory", "## Persistent Memory", persistent_mem)
-
-    _budget_append("conversation_history", "## Conversation History", conversation_history)
-
+    # Working memory (always fresh)
     ctx = memory.build_context_message()
-    _budget_append("working_memory", "", ctx)
+    if ctx:
+        parts.append(ctx)
 
-    # System reminders (injected dynamically during ReAct loop)
+    # System reminders
     if reminders:
         reminder_text = "\n".join(f"<system-reminder>{r}</system-reminder>" for r in reminders)
         parts.append(f"## System Reminders\n{reminder_text}")
 
     return "\n\n".join(parts)
+
+
+def _arg_similarity(sig_a: str, sig_b: str) -> float:
+    """Compute similarity between two call signatures (0.0 to 1.0).
+
+    Uses character-level overlap ratio. Quick and sufficient for
+    detecting near-duplicate tool calls.
+    """
+    if sig_a == sig_b:
+        return 1.0
+    if not sig_a or not sig_b:
+        return 0.0
+    # Simple Jaccard on character bigrams
+    def _bigrams(s: str) -> set[str]:
+        return {s[i:i+2] for i in range(len(s) - 1)} if len(s) > 1 else {s}
+    a, b = _bigrams(sig_a), _bigrams(sig_b)
+    intersection = len(a & b)
+    union = len(a | b)
+    return intersection / union if union else 0.0
 
 
 # ── ReAct Loop ────────────────────────────────────────────────────
@@ -798,19 +689,70 @@ async def react_loop(
     _loaded_deferred: set[str] = set()  # tracks which deferred tools have been loaded
     _tools_dirty = False  # True when deferred tool loaded → rebind next round
 
-    # Build tool descriptions for the system prompt
-    tool_desc_lines = []
+    # Build tool descriptions grouped by category
+    _CATEGORY_LABELS = {
+        "search": "Search & Discovery (read-only)",
+        "external": "External Lookup (network)",
+        "file": "File Operations (local)",
+        "execution": "Execution (side effects)",
+        "vcs": "Version Control",
+        "task": "Task Management",
+        "delegation": "Delegation",
+        "meta": "Meta",
+        "general": "Other",
+    }
+    categorized: dict[str, list[str]] = {}
     for t in tool_defs.values():
+        cat = getattr(t, "category", "general")
         if t.deferred:
-            # Deferred: name + description only, no parameters
-            tool_desc_lines.append(f"- **{t.name}** [deferred]: {t.description}")
+            line = f"  - **{t.name}** [deferred]: {t.description}"
         else:
             params = ", ".join(
                 f"{k}: {v.get('type', 'any')}"
                 for k, v in t.parameters.get("properties", {}).items()
             )
-            tool_desc_lines.append(f"- **{t.name}**({params}): {t.description}")
-    tool_descriptions = "\n".join(tool_desc_lines)
+            line = f"  - **{t.name}**({params}): {t.description}"
+        categorized.setdefault(cat, []).append(line)
+    # Add skill descriptions to delegation category + collect triggers for routing hints
+    _skill_triggers: list[tuple[str, str, str]] = []  # (skill_key, trigger_regex, description)
+    try:
+        from tools.skill_loader import load_skills
+        _skills = load_skills()
+        if _skills:
+            for _sk, _sv in _skills.items():
+                _desc = _sv.get("description", "")
+                categorized.setdefault("delegation", []).append(
+                    f"  - **{_sk}** (skill): {_desc}"
+                )
+                _trigger = _sv.get("_trigger", "")
+                if _trigger:
+                    _skill_triggers.append((_sk, _trigger, _desc))
+    except Exception:
+        pass
+
+    # Skill trigger auto-routing: check if user input matches any skill trigger
+    _skill_route_hint = ""
+    if _skill_triggers:
+        import re as _re
+        _input_lower = user_input.lower()
+        for _sk, _trigger, _desc in _skill_triggers:
+            try:
+                if _re.search(_trigger, _input_lower):
+                    _skill_route_hint = (
+                        f"The user's request matches the '{_sk}' skill ({_desc}). "
+                        f"Consider using delegate(role='{_sk}') for this task."
+                    )
+                    logger.info("Skill trigger matched: '%s' for input", _sk)
+                    break
+            except _re.error:
+                pass
+
+    tool_desc_parts = []
+    for cat_key in _CATEGORY_LABELS:
+        if cat_key in categorized:
+            tool_desc_parts.append(f"**{_CATEGORY_LABELS[cat_key]}**:")
+            tool_desc_parts.extend(categorized[cat_key])
+    tool_descriptions = "\n".join(tool_desc_parts)
 
     # ── Step 3: ReAct loop ──
     from langchain_core.messages import (
@@ -845,13 +787,15 @@ async def react_loop(
 
     # Tool result cache: avoid re-executing identical calls
     _tool_cache: dict[str, str] = {}  # hash(tool_name + args) → result
+    _idem_local: set[str] = set()  # session-local idempotency fallback (when Redis unavailable)
 
     # System reminders: dynamic mid-loop injection
     _pending_reminders: list[str] = []
     _todo_used = False  # track whether todo_manage has been called
+    _total_tool_calls = 0  # cumulative tool calls across all rounds
 
     async def _run_loop() -> str:
-        nonlocal _single_call_rounds, _tools_dirty, llm_with_tools, _todo_used
+        nonlocal _single_call_rounds, _tools_dirty, llm_with_tools, _todo_used, _total_tool_calls
         for round_num in range(max_rounds):
             # Rebind tools if deferred tool was loaded last round
             if _tools_dirty:
@@ -860,8 +804,12 @@ async def react_loop(
                 llm_with_tools = llm.bind_tools(tool_schemas_now)
                 _tools_dirty = False
 
-            # ── System reminder: todo_manage nudge ──
-            if not _todo_used and round_num >= 3 and not is_sub_agent:
+            # ── System reminder: skill routing hint (round 0 only) ──
+            if round_num == 0 and _skill_route_hint:
+                _pending_reminders.append(_skill_route_hint)
+
+            # ── System reminder: todo_manage nudge (only when truly complex) ──
+            if not _todo_used and not is_sub_agent and (round_num >= 5 or _total_tool_calls > 8):
                 _pending_reminders.append(
                     "You haven't created a task list yet. For multi-step tasks, "
                     "use todo_manage(action='create') to track progress."
@@ -878,13 +826,20 @@ async def react_loop(
             current_reminders = list(_pending_reminders)
             _pending_reminders.clear()
             system_prompt = _build_system_prompt(
-                tool_descriptions, memory, conversation_history,
+                tool_descriptions, memory, round_num=round_num,
                 reminders=current_reminders if current_reminders else None,
             )
-            messages = [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=user_input),
-            ]
+            messages = [SystemMessage(content=system_prompt)]
+
+            # Inject conversation history as proper Human/AI message pairs
+            # (instead of stuffing into system prompt)
+            if conversation_history and round_num == 0:
+                messages.append(HumanMessage(content=(
+                    "[Previous conversation context]\n" + conversation_history
+                )))
+                messages.append(AIMessage(content="Understood, I have the previous context."))
+
+            messages.append(HumanMessage(content=user_input))
 
             # Trim conversation to last N complete rounds to avoid context overflow.
             # A "round" = 1 AIMessage + its ToolMessages.
@@ -908,7 +863,9 @@ async def react_loop(
             except Exception as e:
                 logger.error("LLM call failed at round %d: %s", round_num + 1, e)
                 if round_num > 0:
-                    return await _force_conclude_llm(memory, user_input, llm)
+                    if memory.facts:
+                        return await _force_conclude_llm(memory, user_input, llm)
+                    return "抱歉，未能获取到有效信息来完成此任务。请尝试更具体的描述或换个方式提问。"
                 raise
 
             elapsed = time.perf_counter() - start
@@ -958,8 +915,12 @@ async def react_loop(
                     return answer
                 # Empty response with no tool calls
                 if round_num > 0:
-                    return await _force_conclude_llm(memory, user_input, llm)
+                    if memory.facts:
+                        return await _force_conclude_llm(memory, user_input, llm)
+                    return "抱歉，未能获取到有效信息来完成此任务。请尝试更具体的描述或换个方式提问。"
                 continue
+
+            _total_tool_calls += len(tool_calls)
 
             # ── Parallel call detection: nudge LLM if repeatedly making single calls ──
             if len(tool_calls) == 1:
@@ -1002,13 +963,23 @@ async def react_loop(
                 len(recent_calls) >= 3
                 and recent_calls[-1] == recent_calls[-2] == recent_calls[-3]
             )
-            # Check for "similar" repeats (same tool, slightly different args, 3x)
+            # Check for "similar" repeats (same tool, args overlap >80%, 3x)
             is_similar_repeat = False
             if not is_exact_repeat and len(recent_calls) >= 3:
                 recent_tool_names = [
                     sig.split(":")[0] for sig in recent_calls[-3:]
                 ]
-                is_similar_repeat = len(set(recent_tool_names)) == 1
+                if len(set(recent_tool_names)) == 1:
+                    # Same tool 3x — check argument similarity
+                    recent_args = [
+                        set(sig.split(":", 1)[1]) if ":" in sig else set()
+                        for sig in recent_calls[-3:]
+                    ]
+                    # Pairwise overlap: if args strings are >80% similar
+                    sigs = recent_calls[-3:]
+                    overlap_01 = _arg_similarity(sigs[0], sigs[1])
+                    overlap_12 = _arg_similarity(sigs[1], sigs[2])
+                    is_similar_repeat = overlap_01 > 0.8 and overlap_12 > 0.8
 
             # ── Auto-recover disabled tools after TTL ──
             _now = time.perf_counter()
@@ -1128,13 +1099,17 @@ async def react_loop(
                 if t_name in ("write_file", "edit_file", "git_ops", "execute_shell") and task_id:
                     import hashlib as _hl
                     _idem_key = f"idem:{task_id}:{t_name}:{_hl.md5(json.dumps(t_args, sort_keys=True).encode()).hexdigest()[:12]}"
+                    _is_dup = False
                     try:
                         from common.redis_client import is_duplicate
-                        if await is_duplicate(_idem_key, ttl=3600):
-                            logger.info("Idempotent skip: %s(%s)", t_name, _brief_args(t_args))
-                            return tc, f"[idempotent] Operation already completed in this task"
+                        _is_dup = await is_duplicate(_idem_key, ttl=3600)
                     except Exception:
-                        pass
+                        # Redis unavailable — fallback to session-local set
+                        _is_dup = _idem_key in _idem_local
+                    if _is_dup:
+                        logger.info("Idempotent skip: %s(%s)", t_name, _brief_args(t_args))
+                        return tc, f"[idempotent] Operation already completed in this task"
+                    _idem_local.add(_idem_key)
 
                 _t_start = time.perf_counter()
                 try:

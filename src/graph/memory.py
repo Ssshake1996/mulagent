@@ -52,15 +52,24 @@ class WorkingMemory:
 
     def add_fact(self, source: str, content: str, round_num: int,
                  pinned: bool = False) -> None:
-        """Add a tool result to the facts layer. Apply relevance decay to older facts."""
-        # Decay existing facts slightly (older facts become less relevant)
+        """Add a tool result to the facts layer.
+
+        Relevance is computed by round distance: 0.95^(current - fact.round_num).
+        Same-source boost is capped: only the most recent fact of that source gets +0.1.
+        """
+        # Recompute relevance for all unpinned facts based on round distance
         for f in self.facts:
             if not f.pinned:
-                f.relevance *= 0.95
-        # Boost relevance if same tool is called again (confirms importance)
-        for f in self.facts:
+                f.relevance = 0.95 ** (round_num - f.round_num)
+
+        # Boost the most recent fact of the same source (confirms importance)
+        latest_same = None
+        for f in reversed(self.facts):
             if f.source == source:
-                f.relevance = min(1.0, f.relevance + 0.1)
+                latest_same = f
+                break
+        if latest_same and not latest_same.pinned:
+            latest_same.relevance = min(1.0, latest_same.relevance + 0.1)
 
         self.facts.append(Fact(
             source=source,
@@ -117,7 +126,11 @@ class WorkingMemory:
     async def compact_facts_llm(self, llm: Any, keep_recent: int = 5) -> None:
         """LLM-based fact summarization: smarter than simple truncation.
 
-        Preserves key insights and relationships between facts.
+        Per-source group summarization preserving:
+        1. Key findings and conclusions
+        2. Constraints and conditions
+        3. Failed attempts (to avoid repeating)
+
         Falls back to compact_facts() on failure.
         Pinned facts are always preserved intact.
         """
@@ -130,27 +143,34 @@ class WorkingMemory:
         if not old:
             return
 
-        # Build text for LLM summarization
-        fact_text = "\n".join(
-            f"[{f.source}] {f.content[:300]}" for f in old[-10:]
-        )
+        # Group old facts by source for per-source summarization
+        grouped: dict[str, list[Fact]] = {}
+        for f in old:
+            grouped.setdefault(f.source, []).append(f)
+
+        # Build structured text for LLM
+        fact_sections = []
+        for source, facts in grouped.items():
+            lines = [f.content[:400] for f in facts[-5:]]
+            fact_sections.append(f"### [{source}] ({len(facts)} calls)\n" + "\n".join(lines))
+        fact_text = "\n\n".join(fact_sections)
 
         try:
             from langchain_core.messages import HumanMessage, SystemMessage
             messages = [
                 SystemMessage(content=(
-                    "请将以下工具调用结果压缩为简洁摘要。保留：\n"
-                    "1. 关键事实和数据\n"
-                    "2. 重要发现和结论\n"
-                    "3. 失败的尝试（避免重复）\n"
-                    "去掉重复信息和冗余细节。输出不超过 300 字。"
+                    "将以下工具调用结果压缩为摘要。每个工具来源保留2-3句话，必须包含：\n"
+                    "1. 关键发现和结论\n"
+                    "2. 限制条件和约束（如果有）\n"
+                    "3. 失败的尝试（避免重复走弯路）\n"
+                    "去掉原始数据和冗余细节。总输出不超过500字。"
                 )),
                 HumanMessage(content=fact_text),
             ]
             import asyncio
-            response = await asyncio.wait_for(llm.ainvoke(messages), timeout=15)
+            response = await asyncio.wait_for(llm.ainvoke(messages), timeout=20)
             summary = response.content.strip()
-            if summary:
+            if summary and len(summary) > 20:
                 pinned = [f for f in self.facts if f.pinned]
                 recent = [f for f in self.facts if not f.pinned][-keep_recent:]
                 self.facts = pinned + [
@@ -166,8 +186,13 @@ class WorkingMemory:
         # Fallback to simple compaction
         self.compact_facts(keep_recent)
 
-    def build_context_message(self) -> str:
+    def build_context_message(self, facts_token_budget: int = 0) -> str:
         """Assemble all three layers into a single context string.
+
+        Args:
+            facts_token_budget: Token budget for facts section.
+                If 0, auto-detect from config (react.compress.working_memory_budget
+                or 6% of context window).
 
         Structure:
         1. Directives (top, most prominent)
@@ -189,7 +214,20 @@ class WorkingMemory:
         # Layer 3: Facts — sorted by relevance × recency, truncated by tokens
         if self.facts:
             from common.tokenizer import estimate_tokens, truncate_to_tokens
-            # Score = relevance * recency_boost (recent rounds score higher)
+
+            if facts_token_budget <= 0:
+                # Auto-detect: 6% of (context_window - max_tokens)
+                try:
+                    from common.config import get_settings
+                    _model_cfg = get_settings().llm.get_model()
+                    if _model_cfg:
+                        _input = _model_cfg.get_context_window() - _model_cfg.max_tokens
+                        facts_token_budget = max(400, int(_input * 0.06))
+                except Exception:
+                    pass
+                if facts_token_budget <= 0:
+                    facts_token_budget = 3000  # fallback default
+
             max_round = max((f.round_num for f in self.facts), default=0)
             recent = sorted(
                 self.facts,
@@ -197,13 +235,12 @@ class WorkingMemory:
                 reverse=True,
             )[:10]
             fact_lines = []
-            budget = 3000  # token budget for facts section
             used = 0
             for f in recent:
                 line = f"- [{f.source}] {f.content}"
                 line_tokens = estimate_tokens(line)
-                if used + line_tokens > budget:
-                    line = truncate_to_tokens(f"- [{f.source}] {f.content}", budget - used)
+                if used + line_tokens > facts_token_budget:
+                    line = truncate_to_tokens(f"- [{f.source}] {f.content}", facts_token_budget - used)
                     fact_lines.append(line)
                     break
                 fact_lines.append(line)

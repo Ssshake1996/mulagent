@@ -175,4 +175,5 @@ BROWSER_FETCH = ToolDef(
         "required": ["url"],
     },
     fn=_browser_fetch,
+    category="external",
 )

@@ -344,8 +344,12 @@ async def _delegate(params: dict[str, Any], **deps: Any) -> str:
             allowed_tools = role_cfg.get("tools", [])
             knowledge_names = role_cfg.get("knowledge", [])
 
-            # Smart knowledge selection: pick only relevant KBs
-            if knowledge_names:
+            # Handle knowledge: auto — dynamically select from ALL available KBs
+            if knowledge_names == "auto":
+                all_kb_names = list(_LANG_SIGNALS.keys()) + list(_DOMAIN_SIGNALS.keys())
+                knowledge_names = _select_knowledge(all_kb_names, task)
+                logger.info("Auto-knowledge for role '%s': selected %s", role, knowledge_names)
+            elif knowledge_names:
                 knowledge_names = _select_knowledge(knowledge_names, task)
                 # Dynamic knowledge injection: use RAG if available, else file-based
                 qdrant = deps.get("qdrant")
@@ -625,6 +629,7 @@ def _build_delegate_tool() -> ToolDef:
             "required": ["task"],
         },
         fn=_delegate,
+        category="delegation",
     )
 
 
@@ -696,4 +701,5 @@ CHECK_BACKGROUND = ToolDef(
         "required": [],
     },
     fn=_check_background,
+    category="delegation",
 )

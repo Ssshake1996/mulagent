@@ -246,6 +246,7 @@ GIT_OPS = ToolDef(
         "required": ["action"],
     },
     fn=_git_ops,
+    category="vcs",
 )
 
 GITHUB_OPS = ToolDef(
@@ -284,4 +285,5 @@ GITHUB_OPS = ToolDef(
         "required": ["action"],
     },
     fn=_github_ops,
+    category="vcs",
 )

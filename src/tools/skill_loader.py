@@ -34,6 +34,7 @@ _LOCAL_SKILLS_DIR = CONFIG_DIR / "skills"
 # Default tools given to skill-based roles
 _DEFAULT_SKILL_TOOLS = [
     "read_file", "write_file", "edit_file", "list_dir",
+    "glob_search", "grep_search",
     "execute_shell", "knowledge_recall", "web_search",
 ]
 
@@ -250,7 +251,6 @@ def get_delegate_description(yaml_roles: dict[str, dict]) -> str:
         "security_auditor": "security audit",
         "writer": "content creation",
         "executor": "shell/file ops",
-        "guardian": "quality review",
     }
 
     parts = []

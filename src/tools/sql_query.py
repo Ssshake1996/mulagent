@@ -192,4 +192,5 @@ SQL_QUERY = ToolDef(
         "required": ["query"],
     },
     fn=_sql_query,
+    category="execution",
 )

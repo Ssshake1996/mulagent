@@ -181,4 +181,5 @@ DEEP_RESEARCH = ToolDef(
         "required": ["topic"],
     },
     fn=_deep_research,
+    category="external",
 )

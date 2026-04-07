@@ -215,7 +215,7 @@ class MulAgentApp(App):
         text-style: bold;
     }
 
-    /* ── Main three-column layout ── */
+    /* ── Main two-column layout (left sidebar + center/bottom) ── */
     #main { height: 1fr; }
 
     #left-panel {
@@ -251,7 +251,10 @@ class MulAgentApp(App):
     }
     #fav-list > ListItem { padding: 0 1; }
 
-    #center-panel { width: 1fr; overflow: hidden; }
+    /* ── Content area (right of sidebar): chat on top, activity below ── */
+    #content-area { width: 1fr; }
+
+    #center-panel { height: 4fr; overflow: hidden; }
     TabbedContent { height: 1fr; }
     TabbedContent ContentSwitcher { height: 1fr; }
     TabPane { height: 1fr; padding: 0; }
@@ -263,24 +266,27 @@ class MulAgentApp(App):
     }
     #chat-log-raw { height: 1fr; padding: 0 1; color: $foreground; }
 
-    /* ── Tab buttons ── */
+    /* ── Tab buttons (height:1 from Tab base, no border to avoid eating text) ── */
     ContentTab {
         padding: 0 2;
-        border: tall $surface-lighten-2;
+        color: $foreground 60%;
+        background: $surface-lighten-1;
+        text-style: none;
         margin: 0 1 0 0;
     }
     ContentTab:hover {
-        border: tall $accent;
+        color: $foreground;
+        text-style: reverse;
     }
     ContentTab.-active {
-        border: tall $accent;
         color: $accent;
-        text-style: bold;
+        text-style: bold reverse;
     }
 
-    #right-panel {
-        width: 28;
-        border-left: solid $surface-lighten-1;
+    /* ── Activity panel (below chat) ── */
+    #bottom-panel {
+        height: 1fr;
+        border-top: solid $surface-lighten-1;
         padding: 0;
         overflow: hidden;
     }
@@ -311,7 +317,19 @@ class MulAgentApp(App):
         border: solid $surface-lighten-1; margin: 0 1;
     }
     #cmd-popup.visible { display: block; }
-    #input-bar { padding: 0 1; }
+    #input-area {
+        height: 4;
+        padding: 0 1;
+        border: tall $accent 50%;
+        background: $surface;
+    }
+    #input-area:focus {
+        border: tall $accent;
+    }
+    #input-area .text-area--cursor {
+        background: $foreground;
+        color: $background;
+    }
     #shortcut-bar {
         height: 1;
         padding: 0 1;
@@ -361,12 +379,13 @@ class MulAgentApp(App):
         self._task_start: float = 0.0
         self._last_latency: float = 0.0
         self._last_tokens: str = ""
+        self._active_tab: str = "tab-rich"
 
     def compose(self) -> ComposeResult:
         # ── Top status bar ──
         yield Static(self._render_top_bar(), id="top-bar")
 
-        # ── Three-column main area ──
+        # ── Two-column main area: sidebar + content ──
         with Horizontal(id="main"):
             # Left: sessions + favorites
             with Vertical(id="left-panel"):
@@ -375,32 +394,34 @@ class MulAgentApp(App):
                 yield Label("FAVORITES", id="fav-title")
                 yield ListView(id="fav-list")
 
-            # Center: chat with tabs
-            with Vertical(id="center-panel"):
-                with TabbedContent("渲染", "原始", id="chat-tabs"):
-                    with TabPane("渲染", id="tab-rich"):
-                        yield RichLog(highlight=True, markup=True, wrap=True, id="chat-log-rich")
-                    with TabPane("原始", id="tab-raw"):
-                        yield TextArea(
-                            "", id="chat-log-raw", read_only=True,
-                            show_line_numbers=False, soft_wrap=True, language=None, theme="css",
-                        )
+            # Content area: chat (top) + activity (bottom)
+            with Vertical(id="content-area"):
+                # Chat with tabs
+                with Vertical(id="center-panel"):
+                    with TabbedContent("渲染", "原始", id="chat-tabs"):
+                        with TabPane("渲染", id="tab-rich"):
+                            yield RichLog(highlight=True, markup=True, wrap=True, auto_scroll=True, id="chat-log-rich")
+                        with TabPane("原始", id="tab-raw"):
+                            yield TextArea(
+                                "", id="chat-log-raw", read_only=True,
+                                show_line_numbers=False, soft_wrap=True, language=None, theme="css",
+                            )
 
-            # Right: activity panel
-            with Vertical(id="right-panel"):
-                yield Label("ACTIVITY", classes="panel-section-title")
-                yield RichLog(highlight=False, markup=True, wrap=True, id="activity-log")
-                yield Static("", id="progress-bar")
+                # Activity panel (below chat)
+                with Vertical(id="bottom-panel"):
+                    yield Label("ACTIVITY", classes="panel-section-title")
+                    yield RichLog(highlight=False, markup=True, wrap=True, id="activity-log")
+                    yield Static("", id="progress-bar")
 
         # ── Bottom: input + shortcuts ──
         with Vertical(id="input-wrapper"):
             yield OptionList(id="cmd-popup")
-            yield Input(
-                placeholder="Enter message or / for commands...",
-                id="input-bar",
+            yield TextArea(
+                "", id="input-area",
+                soft_wrap=True, show_line_numbers=False, language=None,
             )
         yield Static(
-            " Ctrl+N New  Ctrl+P Commands  Ctrl+L Clear  Ctrl+F Fav  ↑↓ History  Tab Complete  Ctrl+Q Quit",
+            " Enter Send  Shift+Enter Newline  Ctrl+N New  Ctrl+P Commands  Ctrl+L Clear  Ctrl+F Fav  Ctrl+Q Quit",
             id="shortcut-bar",
         )
 
@@ -408,7 +429,40 @@ class MulAgentApp(App):
         self._refresh_sessions()
         self._refresh_favorites()
         self._update_top_bar()
-        self.query_one("#input-bar", Input).focus()
+        self.query_one("#input-area", TextArea).focus()
+
+    # ── Tab switch: save/restore scroll positions ────────────
+
+    @on(TabbedContent.TabActivated, "#chat-tabs")
+    def _on_tab_switched(self, event: TabbedContent.TabActivated) -> None:
+        old_tab = self._active_tab
+        new_tab = str(event.pane.id) if event.pane.id else "tab-rich"
+        self._active_tab = new_tab
+
+        # Read scroll percentage from the old tab, apply to the new tab
+        pct = 0.0
+        try:
+            if old_tab == "tab-rich":
+                w = self.query_one("#chat-log-rich", RichLog)
+            else:
+                w = self.query_one("#chat-log-raw", TextArea)
+            if w.max_scroll_y > 0:
+                pct = w.scroll_y / w.max_scroll_y
+        except NoMatches:
+            pass
+
+        def _sync_scroll() -> None:
+            try:
+                if new_tab == "tab-rich":
+                    w = self.query_one("#chat-log-rich", RichLog)
+                else:
+                    w = self.query_one("#chat-log-raw", TextArea)
+                target_y = int(pct * w.max_scroll_y)
+                w.scroll_to(0, target_y, animate=False)
+            except NoMatches:
+                pass
+
+        self.set_timer(0.1, _sync_scroll)
 
     # ── Top bar ──────────────────────────────────────────────
 
@@ -445,7 +499,7 @@ class MulAgentApp(App):
             self._load_session_history()
             self._refresh_sessions()
             self._update_top_bar()
-            self.query_one("#input-bar", Input).focus()
+            self.query_one("#input-area", TextArea).focus()
 
     def _load_session_history(self) -> None:
         conv_store = self.runner.session_manager.conv_store
@@ -464,9 +518,9 @@ class MulAgentApp(App):
     def _on_fav_selected(self, event: ListView.Selected) -> None:
         idx = event.list_view.index
         if idx is not None and 0 <= idx < len(self._favorites):
-            inp = self.query_one("#input-bar", Input)
-            inp.value = self._favorites[idx]
-            inp.cursor_position = len(inp.value)
+            inp = self.query_one("#input-area", TextArea)
+            inp.clear()
+            inp.insert(self._favorites[idx])
             inp.focus()
 
     def _refresh_favorites(self) -> None:
@@ -480,9 +534,9 @@ class MulAgentApp(App):
 
     # ── Command auto-completion ────────────────────────────────
 
-    @on(Input.Changed, "#input-bar")
-    def _on_input_changed(self, event: Input.Changed) -> None:
-        text = event.value
+    @on(TextArea.Changed, "#input-area")
+    def _on_input_changed(self, event: TextArea.Changed) -> None:
+        text = event.text_area.text
         if text.startswith("/"):
             query = text.lower()
             self._filtered_cmds = [
@@ -516,14 +570,15 @@ class MulAgentApp(App):
         idx = popup.highlighted
         if idx is not None and 0 <= idx < len(self._filtered_cmds):
             cmd, _desc = self._filtered_cmds[idx]
-            inp = self.query_one("#input-bar", Input)
+            inp = self.query_one("#input-area", TextArea)
             needs_arg = cmd in (
                 "/resume", "/model", "/fav add", "/fav del",
                 "/modify view", "/modify edit", "/modify del",
                 "/directives add", "/directives del",
             )
-            inp.value = cmd + (" " if needs_arg else "")
-            inp.cursor_position = len(inp.value)
+            new_text = cmd + (" " if needs_arg else "")
+            inp.clear()
+            inp.insert(new_text)
             self._hide_popup()
             inp.focus()
 
@@ -531,7 +586,7 @@ class MulAgentApp(App):
     def _on_popup_selected(self, event: OptionList.OptionSelected) -> None:
         self._accept_completion()
 
-    # ── Key handling (popup + history) ────────────────────────
+    # ── Key handling (popup + history + submit) ────────────────
 
     def on_key(self, event) -> None:
         # ── Popup navigation ──
@@ -558,40 +613,28 @@ class MulAgentApp(App):
             elif event.key == "escape":
                 event.prevent_default(); event.stop()
                 self._hide_popup()
-                self.query_one("#input-bar", Input).focus()
+                self.query_one("#input-area", TextArea).focus()
                 return
 
-        # ── Input history ──
+        # ── Input area key handling ──
         try:
-            inp = self.query_one("#input-bar", Input)
+            inp = self.query_one("#input-area", TextArea)
         except NoMatches:
             return
         if not inp.has_focus:
             return
 
-        if event.key == "up" and self._input_history:
+        # Enter = submit, Shift+Enter = newline
+        if event.key == "enter":
             event.prevent_default(); event.stop()
-            if self._history_index == -1:
-                self._history_draft = inp.value
-                self._history_index = len(self._input_history) - 1
-            elif self._history_index > 0:
-                self._history_index -= 1
-            inp.value = self._input_history[self._history_index]
-            inp.cursor_position = len(inp.value)
-        elif event.key == "down" and self._history_index >= 0:
-            event.prevent_default(); event.stop()
-            if self._history_index < len(self._input_history) - 1:
-                self._history_index += 1
-                inp.value = self._input_history[self._history_index]
-            else:
-                self._history_index = -1
-                inp.value = self._history_draft
-            inp.cursor_position = len(inp.value)
+            self._submit_input()
+            return
 
     # ── Input handling ────────────────────────────────────────
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
-        text = event.value.strip()
+    def _submit_input(self) -> None:
+        inp = self.query_one("#input-area", TextArea)
+        text = inp.text.strip()
         if not text:
             return
         if self._popup_visible and text.startswith("/"):
@@ -603,7 +646,7 @@ class MulAgentApp(App):
                     self._accept_completion()
                     return
         self._hide_popup()
-        event.input.clear()
+        inp.clear()
 
         # Save to history
         if not self._input_history or self._input_history[-1] != text:
@@ -732,14 +775,14 @@ class MulAgentApp(App):
         self._update_top_bar()
 
     def action_focus_input(self) -> None:
-        self.query_one("#input-bar", Input).focus()
+        self.query_one("#input-area", TextArea).focus()
 
     def action_command_palette(self) -> None:
         def _on_result(cmd: str | None) -> None:
             if cmd:
-                inp = self.query_one("#input-bar", Input)
-                inp.value = cmd + " "
-                inp.cursor_position = len(inp.value)
+                inp = self.query_one("#input-area", TextArea)
+                inp.clear()
+                inp.insert(cmd + " ")
                 inp.focus()
         self.push_screen(CommandPalette(), callback=_on_result)
 
@@ -750,8 +793,8 @@ class MulAgentApp(App):
         self._clear_activity()
 
     def action_add_favorite(self) -> None:
-        inp = self.query_one("#input-bar", Input)
-        text = inp.value.strip()
+        inp = self.query_one("#input-area", TextArea)
+        text = inp.text.strip()
         if text and text not in self._favorites:
             self._favorites.append(text)
             _save_favorites(self._favorites)
@@ -1024,12 +1067,14 @@ class MulAgentApp(App):
 
     def _write_chat(self, role: str, content: str) -> None:
         self._messages.append({"role": role, "content": content})
-        # Raw panel
+        # Raw panel — only auto-scroll if active
         raw = self.query_one("#chat-log-raw", TextArea)
         raw.insert(f"\n{role}:\n{content}\n", raw.document.end)
-        raw.scroll_end(animate=False)
-        # Rich panel
+        if self._active_tab == "tab-raw":
+            raw.scroll_end(animate=False)
+        # Rich panel — only auto-scroll if active
         rich_log = self.query_one("#chat-log-rich", RichLog)
+        rich_log.auto_scroll = (self._active_tab == "tab-rich")
         role_style = "bold cyan" if role == "Assistant" else "bold green" if role == "You" else "bold red"
         rich_log.write(RichText(f"\n{role}:", style=role_style))
         rich_log.write(RichMarkdown(content))
@@ -1038,8 +1083,10 @@ class MulAgentApp(App):
         self._messages.append({"role": "system", "content": msg})
         raw = self.query_one("#chat-log-raw", TextArea)
         raw.insert(f"\n--- {msg}\n", raw.document.end)
-        raw.scroll_end(animate=False)
+        if self._active_tab == "tab-raw":
+            raw.scroll_end(animate=False)
         rich_log = self.query_one("#chat-log-rich", RichLog)
+        rich_log.auto_scroll = (self._active_tab == "tab-rich")
         rich_log.write(RichText(f"--- {msg}", style="dim"))
 
     def _clear_chat(self) -> None:
@@ -1060,11 +1107,9 @@ class MulAgentApp(App):
             sessions = self.runner.session_manager.list_sessions("cli_user", limit=15)
             self._sessions_cache = sessions
             for s in sessions:
-                sid = s["session_id"][-8:]
-                turns = s.get("turns", 0)
-                preview = s.get("preview", "")[:16] or "(empty)"
-                marker = "▸" if s["session_id"] == self.session_id else " "
-                lv.append(ListItem(Label(f"{marker}{sid} [{turns}] {preview}")))
+                preview = s.get("preview", "")[:20] or "(empty)"
+                marker = "▸ " if s["session_id"] == self.session_id else "  "
+                lv.append(ListItem(Label(f"{marker}{preview}")))
         except NoMatches:
             pass
 

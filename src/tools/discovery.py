@@ -201,6 +201,7 @@ WEB_SEARCH = ToolDef(
         "required": ["query"],
     },
     fn=_web_search,
+    category="search",
 )
 
 KNOWLEDGE_RECALL = ToolDef(
@@ -217,4 +218,5 @@ KNOWLEDGE_RECALL = ToolDef(
         "required": ["query"],
     },
     fn=_knowledge_recall,
+    category="search",
 )

@@ -156,6 +156,7 @@ TODO_MANAGE = ToolDef(
         "required": ["action"],
     },
     fn=_todo_manage,
+    category="task",
 )
 
 
@@ -225,4 +226,5 @@ PLAN_SUBMIT = ToolDef(
         "required": ["plan"],
     },
     fn=_plan_submit,
+    category="task",
 )

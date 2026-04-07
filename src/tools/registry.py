@@ -100,6 +100,7 @@ LOAD_TOOL = ToolDef(
         "required": ["name"],
     },
     fn=_load_tool_fn,
+    category="meta",
 )
 
 

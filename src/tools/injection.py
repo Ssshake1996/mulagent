@@ -618,6 +618,7 @@ WEB_FETCH = ToolDef(
         "required": ["url"],
     },
     fn=_web_fetch,
+    category="search",
 )
 
 READ_FILE = ToolDef(
@@ -642,6 +643,7 @@ READ_FILE = ToolDef(
         "required": ["path"],
     },
     fn=_read_file,
+    category="search",
 )
 
 LIST_DIR = ToolDef(
@@ -669,6 +671,7 @@ LIST_DIR = ToolDef(
         "required": ["path"],
     },
     fn=_list_dir,
+    category="search",
 )
 
 GLOB_SEARCH = ToolDef(
@@ -697,6 +700,7 @@ GLOB_SEARCH = ToolDef(
         "required": ["pattern"],
     },
     fn=_glob_search,
+    category="search",
 )
 
 GREP_SEARCH = ToolDef(
@@ -737,4 +741,5 @@ GREP_SEARCH = ToolDef(
         "required": ["pattern"],
     },
     fn=_grep_search,
+    category="search",
 )

@@ -35,7 +35,7 @@
                               ┌──────────┐   ┌──────────┐    ┌──────────────┐
                               │ 搜索/检索 │   │ 文件/代码 │    │   delegate   │
                               │ web_search│   │ read_file │    │  (子 agent)  │
-                              │ knowledge │   │ glob/grep │    │  12 种角色    │
+                              │ knowledge │   │ glob/grep │    │  11 种角色    │
                               │ glob/grep │   │ code_run  │    │  background  │
                               └──────────┘   │ git_ops   │    │  worktree    │
                                               │ sql_query │    └──────┬───────┘
@@ -122,7 +122,7 @@ mul-agent/
 ├── config/
 │   ├── settings.yaml              # 运行时配置（含 API Key，不入 git）
 │   ├── settings.yaml.example      # 配置模板
-│   ├── agents.yaml                # 12 个专业角色定义
+│   ├── agents.yaml                # 11 个专业角色定义（支持 knowledge: auto 动态知识选择）
 │   ├── tools.yaml                 # 工具配置
 │   ├── knowledge/                 # 角色知识库（18 个 .md 文件：python/go/rust/java 等）
 │   ├── skills/                    # 外部 Skill 目录（自动注册为 delegate 角色）
@@ -187,7 +187,7 @@ react_loop(user_input, tools, llm)
 
 ### 3.3 子 Agent 委派
 
-`delegate` 工具会启动独立 ReAct 循环（最多 5 轮、90s 超时），支持 12 个内置角色 + 自动加载的 Skill 角色：
+`delegate` 工具会启动独立 ReAct 循环（最多 5 轮、90s 超时），支持 11 个内置角色 + 自动加载的 Skill 角色：
 
 | 类别 | 角色 |
 |------|------|
@@ -195,7 +195,7 @@ react_loop(user_input, tools, llm)
 | 研究 | researcher, analyst |
 | 代码 | coder, code_reviewer, build_resolver, tdd_guide |
 | 安全 | security_auditor |
-| 内容 | writer, executor, guardian |
+| 内容 | writer, executor |
 | Skill | 自动从 config/skills/ 和 SKILL_DIRS 环境变量加载 |
 
 **内置角色**定义在 `config/agents.yaml`，每个角色有：
@@ -668,12 +668,48 @@ metadata:
 | Directive 每 5 轮重注入 | LLM 对长上下文中间部分的 attention 权重衰减，定期 reminder 补偿 |
 | 完整性门控（Completion Gate） | LLM 倾向于"差不多就结束"，必须检查 todo 全部完成才允许返回最终回答 |
 | 数值计算强制 code_run | LLM 数学能力差，百分比/统计/字数必须用 Python 计算，不能估算 |
+| Prompt 分层注入（BASE+EXTENDED） | 安全/经验等规则首轮注入即可，不需每轮重复消耗 token |
+| 工具描述按 category 分组 | 分类展示帮助 LLM 快速定位工具，减少描述冗余 |
+| 对话历史作为消息列表注入 | 放在 system prompt 中注意力衰减快，独立消息对 LLM attention 更强 |
+| Knowledge auto 动态选择 | 10 个知识库全量注入浪费 ~50K token，按任务语言/领域动态选 ≤4 个 |
+| Skill trigger 自动路由 | 用户输入匹配 skill trigger 时主动提示，降低 skill 使用门槛 |
+| pre_tool_hook 语义分类匹配 | 全量 directive 对全量工具逐一匹配误拦截率高，按操作类型分类精准匹配 |
+| Fact 衰减基于 round 距离 | 累积乘法在高轮次时所有 fact 趋近于零，距离衰减更符合"最近事实更重要"的直觉 |
+| 重复检测用参数相似度 | 同名工具不同参数不应判重复，bigram Jaccard > 0.8 兼顾效率和准确性 |
 
 ---
 
 ## 12. 变更日志
 
-### v0.18.0 — ProjectPilot 大项目支持（当前）
+### v0.19.0 — System Prompt 与架构深度优化（当前）
+
+对标 Claude Code 最佳实践，18 项 prompt/工具/架构优化，分 4 批实施：
+
+**Batch 1 — Prompt 分层与工具描述优化：**
+- **Prompt 分层注入**：`ORCHESTRATOR_PROMPT` 拆分为 `BASE`（每轮）+ `EXTENDED`（仅首轮），减少重复 token 消耗
+- **工具描述去重 + 分类展示**：ToolDef 新增 `category` 字段（search/file/execution/vcs/task/delegation/meta），system prompt 中按分类分组展示工具描述
+- **对话历史改为消息列表**：从 system prompt 字符串注入改为 `HumanMessage`/`AIMessage` 对，提升 LLM 注意力
+- **删除 Guardian 角色**：11 个内置角色（原 12 个），代码审查功能已由 code_reviewer 覆盖
+- **compact_facts_llm 改进**：按来源分组（每源最多 5 条×400 字符），LLM 摘要 2-3 句/源，500 字符预算，超时 20s
+- **空响应分级处理**：facts 为空时直接返回友好提示，不调用 LLM 强制总结
+
+**Batch 2 — 循环检测与幂等性增强：**
+- **Todo nudge 阈值提升**：从 `round>=3` 改为 `round>=5 或 tool_calls>8`，减少简单任务的干扰提醒
+- **重复检测改为参数相似度**：新增 `_arg_similarity()` 基于字符 bigram Jaccard 相似度（>0.8 判为重复），替代单纯工具名匹配
+- **幂等性 fallback**：Redis 不可用时自动降级到会话级 `_idem_local: set[str]`
+
+**Batch 3 — 记忆衰减与缓存优化：**
+- **Fact 衰减模型重写**：从累积 `*=0.95` 改为 `0.95^(current_round - fact.round_num)`，距离越远衰减越大
+- **Facts budget 从 config 读取**：基于 `context_window` 的 6% 动态分配，不再硬编码
+- **System prompt 静态缓存**：`_static_prefix_cache` 缓存 project_directives + persistent_memory 块，300s TTL
+
+**Batch 4 — 知识动态化与安全增强：**
+- **Knowledge auto 动态选择**：coder/code_reviewer/build_resolver 的 `knowledge` 改为 `auto`，从全部 18 个知识库中按任务内容自动选择最相关的 ≤4 个
+- **Skill trigger 自动路由提示**：用户输入匹配 skill 的 trigger 正则时，round 0 注入 system reminder 建议使用对应 skill
+- **Skill 默认工具扩展**：`_DEFAULT_SKILL_TOOLS` 新增 `glob_search`、`grep_search`，skill 子 agent 具备代码搜索能力
+- **pre_tool_hook 语义分类匹配**：directive 按操作类型分类（destructive/modify/send/scope），仅对相关工具生效，减少误拦截。新增 send 类操作（push/deploy）的确认拦截
+
+### v0.18.0 — ProjectPilot 大项目支持
 
 新增 ProjectPilot 引擎，支持大型多步骤项目的自动拆解、迭代执行和自我纠正：
 
