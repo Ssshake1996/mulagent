@@ -425,6 +425,32 @@ async def _delegate(params: dict[str, Any], **deps: Any) -> str:
         if worktree_path:
             logger.info("Sub-agent worktree created: %s (branch %s)", worktree_path, worktree_branch)
 
+    # ── Dynamic timeout/rounds based on task complexity ──
+    _BASE_TIMEOUT = 90
+    _BASE_ROUNDS = 5
+    try:
+        from common.config import get_settings as _gs
+        _react_cfg = _gs().react
+        _main_timeout = _react_cfg.timeout
+        _tool_timeout = _react_cfg.tool_timeout
+    except Exception:
+        _main_timeout = 600
+        _tool_timeout = 120
+
+    _task_lower = task.lower()
+    _is_batch = any(kw in _task_lower for kw in [
+        "批量", "全部", "所有", "每一", "逐个", "逐章", "1~", "1-", "第1到",
+        "校验", "validate", "batch", "all chapters", "each",
+    ])
+    if _is_batch or len(task) > 500:
+        sub_timeout = min(_BASE_TIMEOUT * 6, _main_timeout)
+        sub_rounds = min(_BASE_ROUNDS * 3, 20)
+        logger.info("Delegate dynamic scaling: batch/complex task detected, "
+                     "timeout=%ds, max_rounds=%d", sub_timeout, sub_rounds)
+    else:
+        sub_timeout = _BASE_TIMEOUT
+        sub_rounds = _BASE_ROUNDS
+
     async def _run_sub_agent() -> str:
         """Run the sub-agent and return compressed result."""
         meta_inner: dict[str, Any] = {}
@@ -436,8 +462,8 @@ async def _delegate(params: dict[str, Any], **deps: Any) -> str:
             tools=sub_tools,
             llm=llm,
             deps=sub_deps_inner,
-            max_rounds=5,
-            timeout=90,
+            max_rounds=sub_rounds,
+            timeout=sub_timeout,
             is_sub_agent=True,
             parent_directives=parent_directives,
             result_meta=meta_inner,

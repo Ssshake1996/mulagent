@@ -13,6 +13,15 @@ import re
 from pathlib import Path
 from typing import Any
 
+
+def _get_tool_timeout() -> int:
+    """Read tool_timeout from config. Falls back to 120s if config unavailable."""
+    try:
+        from common.config import get_settings
+        return get_settings().react.tool_timeout
+    except Exception:
+        return 120
+
 from tools.base import ToolDef
 
 logger = logging.getLogger(__name__)
@@ -71,7 +80,8 @@ async def _execute_shell(params: dict[str, Any], **deps: Any) -> str:
         logger.warning("Blocked dangerous command: %s", command)
         return f"BLOCKED: dangerous command detected — `{command}`"
 
-    timeout = min(params.get("timeout", 60), 120)
+    # Use config tool_timeout as cap (no longer hardcoded 120s)
+    timeout = min(params.get("timeout", 60), _get_tool_timeout())
 
     # Try Docker sandbox first
     from tools.sandbox import execute_sandboxed
@@ -129,7 +139,7 @@ async def _code_run(params: dict[str, Any], **deps: Any) -> str:
         return "Error: code is required"
 
     language = params.get("language", "python").lower()
-    timeout = min(params.get("timeout", 60), 120)
+    timeout = min(params.get("timeout", 60), _get_tool_timeout())
 
     _tmpdir = tempfile.gettempdir()
     _rust_out = str(Path(_tmpdir) / "_mul_agent_out")
