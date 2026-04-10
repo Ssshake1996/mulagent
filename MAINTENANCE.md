@@ -511,8 +511,7 @@ qdrant:
 
 react:
   max_rounds: 30                      # 最大推理轮次（复杂任务需要更多轮）
-  timeout: 600                        # 整体超时（秒）— 10 分钟
-  tool_timeout: 120                   # 单工具超时
+  timeout: 600                        # 整体超时（秒）— 单工具超时自动推导为 timeout/10
   max_parallel_tools: 5               # 并行工具数
   max_conversation_pairs: 4           # 上下文保留轮数
 

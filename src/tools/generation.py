@@ -15,10 +15,11 @@ from typing import Any
 
 
 def _get_tool_timeout() -> int:
-    """Read tool_timeout from config. Falls back to 120s if config unavailable."""
+    """Derive per-tool timeout from react.timeout. Falls back to 120s."""
     try:
         from common.config import get_settings
-        return get_settings().react.tool_timeout
+        overall = get_settings().react.timeout
+        return max(overall // 10, 60)
     except Exception:
         return 120
 

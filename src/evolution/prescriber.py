@@ -75,7 +75,7 @@ class Prescriber:
                 type="tune_params",
                 target="react.timeout",
                 reason=f"Timeout rate is {timeout_rate:.0%} — increase default timeout",
-                patch={"timeout": 900, "tool_timeout": 180},
+                patch={"timeout": 900},
                 priority=1,
                 confidence=0.9,
             ))

@@ -430,12 +430,9 @@ async def _delegate(params: dict[str, Any], **deps: Any) -> str:
     _BASE_ROUNDS = 5
     try:
         from common.config import get_settings as _gs
-        _react_cfg = _gs().react
-        _main_timeout = _react_cfg.timeout
-        _tool_timeout = _react_cfg.tool_timeout
+        _main_timeout = _gs().react.timeout
     except Exception:
         _main_timeout = 600
-        _tool_timeout = 120
 
     _task_lower = task.lower()
     _is_batch = any(kw in _task_lower for kw in [

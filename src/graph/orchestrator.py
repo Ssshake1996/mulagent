@@ -65,7 +65,7 @@ async def run_react(
             deps=deps,
             max_rounds=react_cfg.max_rounds,
             timeout=effective_timeout,
-            tool_timeout=react_cfg.tool_timeout,
+            tool_timeout=max(effective_timeout // 10, 60),
             max_parallel_tools=react_cfg.max_parallel_tools,
             max_conversation_pairs=react_cfg.max_conversation_pairs,
             parent_directives=session_directives,
