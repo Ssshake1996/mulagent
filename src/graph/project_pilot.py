@@ -26,7 +26,17 @@ from typing import Any, Callable, Awaitable
 
 logger = logging.getLogger(__name__)
 
-# ── Data Models ──────────────────────────────────────────────────────
+
+def _llm_timeout() -> int:
+    """Derive LLM call timeout from react.timeout. Floor 30s."""
+    try:
+        from common.config import get_settings
+        return max(get_settings().react.timeout // 20, 30)
+    except Exception:
+        return 30
+
+
+# ── Data Models ────────────────────────────────────────────────────���─
 
 DECISION_MARKER = re.compile(r"\[DECISION_NEEDED:\s*(.+?)\]", re.DOTALL)
 
@@ -117,7 +127,7 @@ async def clarify_goal(user_input: str, llm: Any) -> tuple[str, list[str]]:
     ]
 
     try:
-        response = await asyncio.wait_for(llm.ainvoke(messages), timeout=30)
+        response = await asyncio.wait_for(llm.ainvoke(messages), timeout=_llm_timeout())
         content = response.content.strip()
         if content.startswith("```"):
             lines = content.split("\n")
@@ -180,7 +190,7 @@ async def decompose_project(
         )),
     ]
 
-    response = await asyncio.wait_for(llm.ainvoke(messages), timeout=30)
+    response = await asyncio.wait_for(llm.ainvoke(messages), timeout=_llm_timeout())
     content = response.content.strip()
 
     # Strip markdown code fences if present
@@ -358,7 +368,7 @@ async def review_iteration(
     ]
 
     try:
-        response = await asyncio.wait_for(llm.ainvoke(messages), timeout=30)
+        response = await asyncio.wait_for(llm.ainvoke(messages), timeout=_llm_timeout())
         content = response.content.strip()
         if content.startswith("```"):
             lines = content.split("\n")

@@ -310,7 +310,13 @@ class Diagnostician:
                 for r in rows:
                     if r.completed_at and r.created_at:
                         d = (r.completed_at - r.created_at).total_seconds()
-                        if 0 < d < 3600:
+                        # Accept durations up to 2x react.timeout (large tasks can be very long)
+                        try:
+                            from common.config import get_settings as _dgs
+                            _max_valid_duration = _dgs().react.timeout * 2
+                        except Exception:
+                            _max_valid_duration = 7200
+                        if 0 < d < _max_valid_duration:
                             durations.append(d)
                 if durations:
                     result["avg_duration_s"] = sum(durations) / len(durations)

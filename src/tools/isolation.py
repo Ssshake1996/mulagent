@@ -425,14 +425,19 @@ async def _delegate(params: dict[str, Any], **deps: Any) -> str:
         if worktree_path:
             logger.info("Sub-agent worktree created: %s (branch %s)", worktree_path, worktree_branch)
 
-    # ── Dynamic timeout/rounds based on task complexity ──
-    _BASE_TIMEOUT = 90
-    _BASE_ROUNDS = 5
+    # ── Dynamic timeout/rounds derived from config ──
     try:
         from common.config import get_settings as _gs
-        _main_timeout = _gs().react.timeout
+        _react_cfg = _gs().react
+        _main_timeout = _react_cfg.timeout
+        _main_rounds = _react_cfg.max_rounds
     except Exception:
         _main_timeout = 600
+        _main_rounds = 30
+
+    # Base values: fraction of main loop budget
+    _base_timeout = max(_main_timeout // 10, 90)
+    _base_rounds = max(_main_rounds // 6, 5)
 
     _task_lower = task.lower()
     _is_batch = any(kw in _task_lower for kw in [
@@ -440,13 +445,13 @@ async def _delegate(params: dict[str, Any], **deps: Any) -> str:
         "校验", "validate", "batch", "all chapters", "each",
     ])
     if _is_batch or len(task) > 500:
-        sub_timeout = min(_BASE_TIMEOUT * 6, _main_timeout)
-        sub_rounds = min(_BASE_ROUNDS * 3, 20)
+        sub_timeout = min(_base_timeout * 6, _main_timeout)
+        sub_rounds = min(_base_rounds * 4, _main_rounds)
         logger.info("Delegate dynamic scaling: batch/complex task detected, "
                      "timeout=%ds, max_rounds=%d", sub_timeout, sub_rounds)
     else:
-        sub_timeout = _BASE_TIMEOUT
-        sub_rounds = _BASE_ROUNDS
+        sub_timeout = _base_timeout
+        sub_rounds = _base_rounds
 
     async def _run_sub_agent() -> str:
         """Run the sub-agent and return compressed result."""

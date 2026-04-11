@@ -276,7 +276,7 @@ class SandboxSettings(BaseSettings):
 
 
 class SecuritySettings(BaseSettings):
-    max_sandbox_timeout_seconds: int = 300
+    max_sandbox_timeout_seconds: int = 0  # 0 = auto-derive from react.timeout (timeout // 2, floor 300)
     max_sandbox_memory_mb: int = 512
 
 

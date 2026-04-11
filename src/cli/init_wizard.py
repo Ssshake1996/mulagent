@@ -177,7 +177,7 @@ feishu:
   autostart: false
 
 security:
-  max_sandbox_timeout_seconds: 300
+  max_sandbox_timeout_seconds: 0  # 0 = auto (react.timeout // 2, floor 300)
   max_sandbox_memory_mb: 512
 """
 

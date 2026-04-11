@@ -522,14 +522,19 @@ class ProgressTracker:
         if not resp.success():
             logger.error("Confirm card patch failed: %s", resp.msg)
 
-        # Wait for user response (timeout 120s)
+        # Wait for user response — timeout scales with react.timeout (floor 120s)
         try:
-            await asyncio.wait_for(event.wait(), timeout=120)
+            from common.config import get_settings as _cgs
+            _confirm_timeout = max(_cgs().react.timeout // 10, 120)
+        except Exception:
+            _confirm_timeout = 300
+        try:
+            await asyncio.wait_for(event.wait(), timeout=_confirm_timeout)
             approved = _confirm_results.pop(confirm_id, False)
         except asyncio.TimeoutError:
             approved = False
             # Update card to show timeout
-            timeout_text = f"⏰ **确认超时** (120s)\n\n操作已跳过: `{tool_name}`"
+            timeout_text = f"⏰ **确认超时** ({_confirm_timeout}s)\n\n操作已跳过: `{tool_name}`"
             self._patch_simple(timeout_text)
         finally:
             _confirm_events.pop(confirm_id, None)
@@ -704,13 +709,18 @@ class ProjectProgressTracker:
             .build()
         _lark_client.im.v1.message.patch(req)
 
-        # Wait for user response (timeout 300s for project decisions)
+        # Wait for user response — timeout scales with react.timeout (floor 300s)
         try:
-            await asyncio.wait_for(event.wait(), timeout=300)
+            from common.config import get_settings as _dgs
+            _decision_timeout = max(_dgs().react.timeout // 4, 300)
+        except Exception:
+            _decision_timeout = 600
+        try:
+            await asyncio.wait_for(event.wait(), timeout=_decision_timeout)
             response = _project_decision_results.pop(decision_id, "继续执行")
         except asyncio.TimeoutError:
-            response = "继续，按你的判断执行"
-            self._patch("⏰ **决策超时** (300s)，自动继续执行...")
+            response = "继续，按你的判断���行"
+            self._patch(f"⏰ **决策超时** ({_decision_timeout}s)，自动继续执行...")
         finally:
             _project_decision_events.pop(decision_id, None)
 

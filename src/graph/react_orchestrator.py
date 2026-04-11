@@ -167,33 +167,44 @@ For complex or recurring tasks, use knowledge_recall to check for relevant past 
 # ── Task-type aware timeout ────────────────────────────────────────
 
 _TASK_TIMEOUT_RULES: list[tuple[list[str], int, str]] = [
-    # (keywords, timeout_seconds, category)
+    # (keywords, timeout_multiplier_percent_of_config_timeout, category)
+    # Values are % of react.timeout — actual seconds computed at call time
+    (["批量", "校验", "validate", "全部", "所有", "逐个", "逐章", "每一章",
+      "1~", "1-", "第1到", "batch", "all chapters", "每一个"], 80, "batch"),
     (["写作", "写一篇", "撰写", "write an essay", "write a report", "write article",
-      "写报告", "写文章", "长文", "blog post", "论文", "paper"], 600, "writing"),
-    (["翻译", "translate", "全文翻译", "翻译成"], 480, "translation"),
+      "写报告", "写文章", "长文", "blog post", "论文", "paper"], 60, "writing"),
+    (["翻译", "translate", "全文翻译", "翻译成"], 50, "translation"),
     (["代码", "code", "实现", "implement", "重构", "refactor", "开发",
-      "develop", "编程", "programming", "写一个程序"], 480, "coding"),
+      "develop", "编程", "programming", "写一个程序"], 50, "coding"),
     (["分析", "analyze", "analysis", "调研", "research", "深度分析",
-      "对比", "compare", "评测", "benchmark"], 420, "analysis"),
-    (["搜索", "search", "查一下", "查询", "look up", "find"], 180, "search"),
-    (["总结", "summarize", "摘要", "summary", "概括"], 180, "summary"),
+      "对比", "compare", "评测", "benchmark"], 40, "analysis"),
+    (["搜索", "search", "查一下", "查询", "look up", "find"], 15, "search"),
+    (["总结", "summarize", "摘要", "summary", "概括"], 15, "summary"),
 ]
 
 
 def estimate_timeout(user_input: str, default: int = 300) -> int:
     """Estimate appropriate timeout based on task type and input length.
 
-    Longer tasks (writing, coding) get more time; short queries get less.
+    Timeout scales with react.timeout from config — percentage-based rather
+    than hardcoded seconds. Longer input gets a proportional bonus.
     """
+    try:
+        from common.config import get_settings
+        config_timeout = get_settings().react.timeout
+    except Exception:
+        config_timeout = 600
+
     text = user_input.lower()
-    for keywords, timeout, _category in _TASK_TIMEOUT_RULES:
+    for keywords, pct, _category in _TASK_TIMEOUT_RULES:
         if any(kw in text for kw in keywords):
-            # Longer input → likely more complex, add buffer
-            length_bonus = min(120, len(user_input) // 100 * 30)
-            return timeout + length_bonus
+            base = config_timeout * pct // 100
+            # Longer input → add proportional buffer (up to 30% of config timeout)
+            length_bonus = min(config_timeout * 30 // 100, len(user_input) // 100 * 30)
+            return base + length_bonus
     # Fallback: scale by input length
     if len(user_input) > 500:
-        return max(default, 420)
+        return max(default, config_timeout * 40 // 100)
     return default
 
 
@@ -1375,10 +1386,11 @@ async def react_loop(
     except asyncio.TimeoutError:
         logger.warning("ReAct loop timed out after %ds", timeout)
         _populate_meta()
-        # Timeout — try LLM synthesis with a short deadline
+        # Timeout — try LLM synthesis; deadline scales with main timeout
+        _conclude_deadline = max(timeout // 20, 30)
         try:
             return await asyncio.wait_for(
-                _force_conclude_llm(memory, user_input, llm), timeout=30,
+                _force_conclude_llm(memory, user_input, llm), timeout=_conclude_deadline,
             )
         except Exception:
             return _force_conclude_fallback(memory, user_input)

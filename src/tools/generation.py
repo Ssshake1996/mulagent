@@ -14,14 +14,19 @@ from pathlib import Path
 from typing import Any
 
 
-def _get_tool_timeout() -> int:
-    """Derive per-tool timeout from react.timeout. Falls back to 120s."""
+def _get_tool_timeout() -> tuple[int, int]:
+    """Derive (default_timeout, max_timeout) from react.timeout.
+
+    Returns:
+        default: used when LLM doesn't pass timeout param
+        max: hard cap for any tool call
+    """
     try:
         from common.config import get_settings
         overall = get_settings().react.timeout
-        return max(overall // 10, 60)
+        return max(overall // 20, 60), max(overall // 10, 120)
     except Exception:
-        return 120
+        return 60, 120
 
 from tools.base import ToolDef
 
@@ -81,8 +86,9 @@ async def _execute_shell(params: dict[str, Any], **deps: Any) -> str:
         logger.warning("Blocked dangerous command: %s", command)
         return f"BLOCKED: dangerous command detected — `{command}`"
 
-    # Use config tool_timeout as cap (no longer hardcoded 120s)
-    timeout = min(params.get("timeout", 60), _get_tool_timeout())
+    # Derive default and cap from config react.timeout
+    _default_to, _max_to = _get_tool_timeout()
+    timeout = min(params.get("timeout", _default_to), _max_to)
 
     # Try Docker sandbox first
     from tools.sandbox import execute_sandboxed
@@ -140,7 +146,8 @@ async def _code_run(params: dict[str, Any], **deps: Any) -> str:
         return "Error: code is required"
 
     language = params.get("language", "python").lower()
-    timeout = min(params.get("timeout", 60), _get_tool_timeout())
+    _default_to, _max_to = _get_tool_timeout()
+    timeout = min(params.get("timeout", _default_to), _max_to)
 
     _tmpdir = tempfile.gettempdir()
     _rust_out = str(Path(_tmpdir) / "_mul_agent_out")
