@@ -253,6 +253,7 @@ class ProjectPilotSettings(BaseSettings):
     max_subtask_retries: int = 2       # 单个子任务最多重做次数
     convergence_threshold: int = 2     # 连续 N 轮评分无提升则停止
     max_parallel_subtasks: int = 3     # 最大并行子任务数
+    plan_review_confidence: int = 4    # confidence < 此值时暂停确认（1-5，4=大部分明确任务跳过）
 
 
 class ReactSettings(BaseSettings):

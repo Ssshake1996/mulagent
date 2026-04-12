@@ -52,6 +52,16 @@ class SubTask:
     retry_count: int = 0
     decision_prompt: str | None = None
     decision_response: str | None = None
+    complexity: str = "medium"       # light | medium | heavy — controls rounds budget
+
+
+@dataclass
+class ProjectMemory:
+    """Cross-stage structured memory — distilled knowledge, not raw results."""
+    decisions: list[str] = field(default_factory=list)       # key decisions made
+    constraints: list[str] = field(default_factory=list)     # discovered constraints
+    artifacts: dict[str, str] = field(default_factory=dict)  # path/name → brief desc
+    lessons: list[str] = field(default_factory=list)         # failure lessons
 
 
 @dataclass
@@ -64,7 +74,8 @@ class ProjectState:
     subtasks: list[SubTask] = field(default_factory=list)
     iteration: int = 0
     scores: list[int] = field(default_factory=list)   # review score per iteration
-    status: str = "running"          # running | paused_for_decision | completed | failed
+    status: str = "running"          # running | plan_review | paused_for_decision | completed | failed
+    project_memory: ProjectMemory = field(default_factory=ProjectMemory)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -89,14 +100,19 @@ OnEventCallback = Callable[[str, ProjectState, dict], Awaitable[Any]]
 _CLARIFY_GOAL_PROMPT = """\
 The user has described a project goal below. It may be vague or incomplete.
 
-Your job: interpret the user's intent and produce a clear, structured set of acceptance criteria \
-that can be used to objectively evaluate whether the project is successful.
+Your job:
+1. Interpret the user's intent and produce a clear, structured set of acceptance criteria.
+2. Assess how confident you are that your interpretation is correct (confidence 1-5).
 
 Rules:
 - Infer what the user most likely wants, even if they didn't state it explicitly.
 - Each criterion should be concrete and verifiable (not "make it good", but "API returns 200 on /health").
 - Cover: functional requirements, key constraints, and definition of done.
 - Use the same language as the user's input.
+- confidence 5 = user input is unambiguous, has clear steps/specs, no room for misinterpretation.
+- confidence 4 = mostly clear, minor assumptions needed.
+- confidence 3 = some ambiguity, multiple valid interpretations exist.
+- confidence 1-2 = very vague, significant guesswork required.
 - Return ONLY valid JSON, no explanation.
 
 Format:
@@ -106,7 +122,9 @@ Format:
     "criterion 1: ...",
     "criterion 2: ...",
     ...
-  ]
+  ],
+  "confidence": 4,
+  "ambiguities": ["optional: list of unclear points that could affect execution"]
 }}
 
 User's input:
@@ -114,10 +132,10 @@ User's input:
 """
 
 
-async def clarify_goal(user_input: str, llm: Any) -> tuple[str, list[str]]:
+async def clarify_goal(user_input: str, llm: Any) -> tuple[str, list[str], int, list[str]]:
     """Clarify a potentially vague user goal into measurable acceptance criteria.
 
-    Returns (clarified_goal_text, list_of_criteria).
+    Returns (clarified_goal_text, list_of_criteria, confidence_1_to_5, ambiguities).
     """
     from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -135,13 +153,27 @@ async def clarify_goal(user_input: str, llm: Any) -> tuple[str, list[str]]:
         result = json.loads(content)
         goal = result.get("clarified_goal", user_input)
         criteria = result.get("acceptance_criteria", [])
+        confidence = int(result.get("confidence", 3))
+        ambiguities = result.get("ambiguities", [])
         if not criteria:
-            return goal, [f"完成用户要求: {user_input[:200]}"]
-        logger.info("Goal clarified: %d acceptance criteria", len(criteria))
-        return goal, criteria
+            return goal, [f"完成用户要求: {user_input[:200]}"], confidence, ambiguities
+        logger.info("Goal clarified: %d criteria, confidence=%d, ambiguities=%d",
+                     len(criteria), confidence, len(ambiguities))
+        return goal, criteria, confidence, ambiguities
     except Exception as e:
         logger.warning("Goal clarification failed: %s, using original input", e)
-        return user_input, [f"完成用户要求: {user_input[:200]}"]
+        return user_input, [f"完成用户要求: {user_input[:200]}"], 3, []
+
+
+def _format_plan_for_review(state: "ProjectState") -> str:
+    """Format project plan as a human-readable summary for user review."""
+    parts = [f"## 目标理解\n{state.acceptance_criteria}"]
+    parts.append(f"\n## 执行计划（共 {len(state.subtasks)} 个子任务）\n")
+    for i, t in enumerate(state.subtasks, 1):
+        deps = f" (依赖: {', '.join(t.depends_on)})" if t.depends_on else ""
+        complexity = getattr(t, "complexity", "medium")
+        parts.append(f"{i}. **[{t.id}]** {t.description}{deps} `[{complexity}]`")
+    return "\n".join(parts)
 
 
 # ── Decomposition ────────────────────────────────────────────────────
@@ -161,12 +193,13 @@ Rules:
 - Each sub-task description must clearly state what outcome is expected.
 - Identify dependencies: which tasks must complete before others can start.
 - Keep the number of tasks reasonable (3-10 for most projects).
+- Assess each task's complexity: "light" (simple lookup/read), "medium" (moderate work), "heavy" (multi-step, lots of code/files).
 - Return ONLY valid JSON, no explanation.
 
 Format:
 [
-  {{"id": "t1", "description": "...", "depends_on": []}},
-  {{"id": "t2", "description": "...", "depends_on": ["t1"]}},
+  {{"id": "t1", "description": "...", "depends_on": [], "complexity": "medium"}},
+  {{"id": "t2", "description": "...", "depends_on": ["t1"], "complexity": "heavy"}},
   ...
 ]
 """
@@ -209,11 +242,16 @@ async def decompose_project(
 
     subtasks = []
     valid_ids = {t.get("id", f"t{i+1}") for i, t in enumerate(raw_tasks)}
+    _valid_complexity = {"light", "medium", "heavy"}
     for i, t in enumerate(raw_tasks):
         tid = t.get("id", f"t{i+1}")
         desc = t.get("description", "")
         deps = [d for d in t.get("depends_on", []) if d in valid_ids and d != tid]
-        subtasks.append(SubTask(id=tid, description=desc, depends_on=deps))
+        complexity = t.get("complexity", "medium")
+        if complexity not in _valid_complexity:
+            complexity = "medium"
+        subtasks.append(SubTask(id=tid, description=desc, depends_on=deps,
+                                complexity=complexity))
 
     # Validate DAG (check for cycles)
     if _has_cycle(subtasks):
@@ -258,21 +296,93 @@ def get_ready_tasks(subtasks: list[SubTask]) -> list[SubTask]:
     ]
 
 
+async def _extract_subtask_knowledge(
+    result: str, subtask: SubTask, llm: Any,
+) -> dict[str, Any]:
+    """Extract cross-stage knowledge from a completed sub-task result.
+
+    Returns dict with keys: decisions, constraints, artifacts, lessons.
+    """
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    messages = [
+        SystemMessage(content=(
+            "从以下任务执行结果中提取跨阶段关键信息。返回 JSON:\n"
+            '{"decisions": ["做出的关键决策"], '
+            '"constraints": ["发现的约束/限制"], '
+            '"artifacts": {"文件路径或名称": "简要说明"}, '
+            '"lessons": ["失败教训或需注意的点"]}\n'
+            "只提取对后续任务有用的信息，忽略临时细节。没有则返回空数组/对象��"
+        )),
+        HumanMessage(content=(
+            f"任务: {subtask.description[:200]}\n\n"
+            f"��行结果:\n{result[:2000]}"
+        )),
+    ]
+
+    try:
+        response = await asyncio.wait_for(llm.ainvoke(messages), timeout=_llm_timeout())
+        content = response.content.strip()
+        if content.startswith("```"):
+            lines = content.split("\n")
+            content = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+        return json.loads(content)
+    except Exception as e:
+        logger.debug("Knowledge extraction failed for %s: %s", subtask.id, e)
+        return {}
+
+
+def _merge_knowledge(pm: ProjectMemory, knowledge: dict[str, Any]) -> None:
+    """Merge extracted knowledge into ProjectMemory."""
+    for d in knowledge.get("decisions", []):
+        if d and d not in pm.decisions:
+            pm.decisions.append(d)
+    for c in knowledge.get("constraints", []):
+        if c and c not in pm.constraints:
+            pm.constraints.append(c)
+    for path, desc in knowledge.get("artifacts", {}).items():
+        pm.artifacts[path] = desc
+    for lesson in knowledge.get("lessons", []):
+        if lesson and lesson not in pm.lessons:
+            pm.lessons.append(lesson)
+
+
+def _format_project_memory(pm: ProjectMemory) -> str:
+    """Format ProjectMemory as context text for sub-task injection."""
+    parts = []
+    if pm.decisions:
+        parts.append("**关键决策**: " + "; ".join(pm.decisions[-8:]))
+    if pm.constraints:
+        parts.append("**已知约束**: " + "; ".join(pm.constraints[-5:]))
+    if pm.artifacts:
+        items = [f"`{k}`: {v}" for k, v in list(pm.artifacts.items())[-8:]]
+        parts.append("**产出物**: " + "; ".join(items))
+    if pm.lessons:
+        parts.append("**教训**: " + "; ".join(pm.lessons[-5:]))
+    return "\n".join(parts)
+
+
 def build_subtask_context(
     subtask: SubTask,
     all_subtasks: list[SubTask],
     original_input: str,
+    project_memory: ProjectMemory | None = None,
 ) -> str:
     """Build the user_input string for run_react() with inter-task context."""
     parts = [f"## 项目背景\n{original_input[:1000]}"]
 
-    # Include results from dependency tasks
+    # Inject cross-stage project memory (distilled, not raw results)
+    if project_memory:
+        mem_text = _format_project_memory(project_memory)
+        if mem_text:
+            parts.append(f"## 项目记忆（前序阶段的关键��息）\n{mem_text}")
+
+    # Include results from direct dependency tasks (truncated)
     dep_results = []
     for dep_id in subtask.depends_on:
         dep = next((t for t in all_subtasks if t.id == dep_id), None)
         if dep and dep.result:
-            # Truncate long results to avoid context explosion
-            result_text = dep.result[:2000]
+            result_text = dep.result[:1500]
             dep_results.append(f"### 前置任务 [{dep.id}] {dep.description[:80]}\n{result_text}")
 
     if dep_results:
@@ -435,6 +545,7 @@ async def save_project_checkpoint(state: ProjectState) -> bool:
         "iteration": state.iteration,
         "scores": state.scores,
         "status": state.status,
+        "project_memory": asdict(state.project_memory),
         "created_at": state.created_at,
         "updated_at": state.updated_at,
     }, ensure_ascii=False)
@@ -457,6 +568,14 @@ async def load_project_checkpoint(project_id: str) -> ProjectState | None:
     try:
         raw = json.loads(data)
         subtasks = [SubTask(**t) for t in raw.get("subtasks", [])]
+        # Restore ProjectMemory
+        pm_raw = raw.get("project_memory", {})
+        pm = ProjectMemory(
+            decisions=pm_raw.get("decisions", []),
+            constraints=pm_raw.get("constraints", []),
+            artifacts=pm_raw.get("artifacts", {}),
+            lessons=pm_raw.get("lessons", []),
+        )
         return ProjectState(
             project_id=raw["project_id"],
             session_id=raw.get("session_id", ""),
@@ -466,6 +585,7 @@ async def load_project_checkpoint(project_id: str) -> ProjectState | None:
             iteration=raw.get("iteration", 0),
             scores=raw.get("scores", []),
             status=raw.get("status", "running"),
+            project_memory=pm,
             created_at=raw.get("created_at", 0),
             updated_at=raw.get("updated_at", 0),
         )
@@ -508,9 +628,10 @@ async def run_project(
             original_input=user_input,
         ), {"phase": "clarifying_goal"})
 
-    clarified_goal, criteria = await clarify_goal(user_input, llm)
+    clarified_goal, criteria, confidence, ambiguities = await clarify_goal(user_input, llm)
     acceptance_text = f"{clarified_goal}\n\n验收标准:\n" + "\n".join(f"- {c}" for c in criteria)
-    logger.info("Goal clarified: %s, %d criteria", clarified_goal[:80], len(criteria))
+    logger.info("Goal clarified: %s, %d criteria, confidence=%d",
+                clarified_goal[:80], len(criteria), confidence)
 
     # ── Step 2: Decompose based on clarified goal ──
     if on_event:
@@ -535,7 +656,32 @@ async def run_project(
     if on_event:
         await on_event("project_progress", state, {"phase": "decomposed"})
 
-    # ── Step 2: Iterative execute + review loop ──
+    # ── Step 2.5: Plan review — only when goal is ambiguous ──
+    # confidence >= 4 means user intent is clear → skip review, execute directly.
+    # confidence < 4 means ambiguity detected → pause for user confirmation.
+    _review_threshold = getattr(cfg, "plan_review_confidence", 4)
+    if confidence < _review_threshold:
+        state.status = "plan_review"
+        plan_summary = _format_plan_for_review(state)
+        ambiguity_text = ""
+        if ambiguities:
+            ambiguity_text = "\n\n需要澄清的点:\n" + "\n".join(f"- {a}" for a in ambiguities)
+
+        if on_event:
+            await on_event("plan_review", state, {
+                "plan_summary": plan_summary + ambiguity_text,
+                "confidence": confidence,
+                "message": "以下是我理解的目标和执行计划，请确认或修改后继续：",
+            })
+        await save_project_checkpoint(state)
+        logger.info("Project %s paused for plan review (confidence=%d < %d)",
+                     project_id, confidence, _review_threshold)
+        return state
+    else:
+        logger.info("Project %s skipping plan review (confidence=%d >= %d)",
+                     project_id, confidence, _review_threshold)
+
+    # ── Step 3: Iterative execute + review loop ──
     for iteration in range(cfg.max_iterations):
         state.iteration = iteration + 1
         await save_project_checkpoint(state)
@@ -667,11 +813,51 @@ async def _execute_wave(
                 elif result.get("status") == "completed":
                     task.status = "completed"
                     task.result = output
+                    # Extract cross-stage knowledge into ProjectMemory
+                    try:
+                        knowledge = await _extract_subtask_knowledge(output, task, llm)
+                        if knowledge:
+                            _merge_knowledge(state.project_memory, knowledge)
+                            logger.info("Extracted knowledge from %s: %d decisions, %d constraints",
+                                        task.id, len(knowledge.get("decisions", [])),
+                                        len(knowledge.get("constraints", [])))
+                    except Exception as _ke:
+                        logger.debug("Knowledge extraction skipped for %s: %s", task.id, _ke)
                 else:
                     task.status = "failed"
                     task.result = output
 
             made_progress = True
+
+        # ── Failure fast-feedback: propagate errors to upstream producers ──
+        _failed_in_batch = [t for t in batch if t.status == "failed"]
+        if _failed_in_batch:
+            from common.config import get_settings as _gsc
+            _max_retries = _gsc().project_pilot.max_subtask_retries
+            for failed_task in _failed_in_batch:
+                # Find upstream tasks that this task depends on
+                for dep_id in failed_task.depends_on:
+                    upstream = next((t for t in state.subtasks if t.id == dep_id), None)
+                    if upstream and upstream.status == "completed" and upstream.retry_count < _max_retries:
+                        upstream.status = "pending"
+                        upstream.retry_count += 1
+                        upstream.decision_response = (
+                            f"你上次的产出导致下游任务 [{failed_task.id}] 失败。"
+                            f"错误信息: {(failed_task.result or '')[:800]}\n"
+                            f"请修复后重新输出。"
+                        )
+                        logger.info("Fast-feedback: upstream %s marked for redo "
+                                    "(downstream %s failed, attempt %d)",
+                                    upstream.id, failed_task.id, upstream.retry_count)
+                        # Also record lesson in project memory
+                        state.project_memory.lessons.append(
+                            f"[{upstream.id}] 的产出导致 [{failed_task.id}] 失败: "
+                            f"{(failed_task.result or '')[:200]}"
+                        )
+                # Reset the failed task itself for retry after upstream fixes
+                if failed_task.depends_on and failed_task.retry_count < _max_retries:
+                    failed_task.status = "pending"
+                    failed_task.retry_count += 1
 
         if on_event:
             await on_event("project_progress", state, {"phase": "batch_done"})
@@ -685,6 +871,14 @@ async def _execute_wave(
     return made_progress
 
 
+# Complexity → timeout/rounds multiplier (relative to config base values)
+_COMPLEXITY_MULTIPLIER = {
+    "light":  (0.3, 0.3),   # 30% of base timeout/rounds
+    "medium": (0.6, 0.5),   # 60% timeout, 50% rounds
+    "heavy":  (1.0, 0.8),   # 100% timeout, 80% rounds
+}
+
+
 async def _execute_subtask(
     subtask: SubTask,
     state: ProjectState,
@@ -694,15 +888,36 @@ async def _execute_subtask(
     """Execute a single sub-task via run_react()."""
     from graph.orchestrator import run_react
 
-    user_input = build_subtask_context(subtask, state.subtasks, state.original_input)
-
-    result = await run_react(
-        user_input=user_input,
-        llm=react_params.get("llm", llm),
-        qdrant=react_params.get("qdrant"),
-        collection_name=react_params.get("collection_name", "case_library"),
-        timeout=react_params.get("timeout", 0),
+    user_input = build_subtask_context(
+        subtask, state.subtasks, state.original_input,
+        project_memory=state.project_memory,
     )
+
+    # Complexity-aware timeout: scale from config base
+    timeout_mult, rounds_mult = _COMPLEXITY_MULTIPLIER.get(
+        subtask.complexity, (0.6, 0.5))
+    try:
+        from common.config import get_settings
+        _cfg = get_settings().react
+        sub_timeout = max(int(_cfg.timeout * timeout_mult), 120)
+        sub_rounds = max(int(_cfg.max_rounds * rounds_mult), 8)
+    except Exception:
+        sub_timeout = react_params.get("timeout", 0)
+        sub_rounds = 0  # let run_react use default
+
+    logger.info("Sub-task %s [%s] → timeout=%ds, max_rounds=%d",
+                subtask.id, subtask.complexity, sub_timeout, sub_rounds)
+
+    # Build kwargs — only override if we got valid values
+    kwargs: dict[str, Any] = {
+        "user_input": user_input,
+        "llm": react_params.get("llm", llm),
+        "qdrant": react_params.get("qdrant"),
+        "collection_name": react_params.get("collection_name", "case_library"),
+        "timeout": sub_timeout,
+    }
+
+    result = await run_react(**kwargs)
 
     return result
 
@@ -737,8 +952,15 @@ async def resume_project(
 
     cfg = get_settings().project_pilot
 
-    # Apply decision response
-    if decision_response and state.status == "paused_for_decision":
+    # Apply plan review confirmation or decision response
+    if state.status == "plan_review":
+        # User confirmed (or modified) the plan → proceed to execution
+        if decision_response:
+            # User may have provided modifications — re-clarify if non-trivial
+            logger.info("Plan review confirmed with response: %s", decision_response[:80])
+        state.status = "running"
+
+    elif decision_response and state.status == "paused_for_decision":
         for t in state.subtasks:
             if t.status == "decision_needed":
                 t.decision_response = decision_response
@@ -814,10 +1036,24 @@ def format_project_result(state: ProjectState) -> str:
     if state.acceptance_criteria:
         parts.append(f"\n## 验收标准\n{state.acceptance_criteria}")
 
+    # Project memory summary
+    pm = state.project_memory
+    if pm.decisions or pm.constraints or pm.lessons:
+        parts.append("\n## 项目记忆\n")
+        if pm.decisions:
+            parts.append("**关键决策**: " + "; ".join(pm.decisions[-5:]))
+        if pm.constraints:
+            parts.append("**发现的约束**: " + "; ".join(pm.constraints[-5:]))
+        if pm.artifacts:
+            items = [f"`{k}`: {v}" for k, v in list(pm.artifacts.items())[-5:]]
+            parts.append("**产出物**: " + "; ".join(items))
+        if pm.lessons:
+            parts.append("**教训**: " + "; ".join(pm.lessons[-3:]))
+
     parts.append("\n## 各任务结果\n")
     for t in state.subtasks:
         icon = {"completed": "✅", "failed": "❌", "pending": "⬜", "running": "🔄"}.get(t.status, "❓")
-        parts.append(f"### {icon} [{t.id}] {t.description[:80]}")
+        parts.append(f"### {icon} [{t.id}] {t.description[:80]} `[{t.complexity}]`")
         if t.result:
             parts.append(t.result[:1500])
         if t.retry_count > 0:

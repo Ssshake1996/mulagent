@@ -256,6 +256,18 @@ async def run_project_pilot(
             **react_params,
         )
 
+        # Plan review: return plan for user confirmation before executing
+        if state.status == "plan_review":
+            from graph.project_pilot import _format_plan_for_review
+            plan_text = _format_plan_for_review(state)
+            return {
+                "final_output": plan_text,
+                "status": "plan_review",
+                "intent": "project",
+                "project_id": state.project_id,
+                "plan_pending": True,
+            }
+
         output = format_project_result(state)
 
         return {
