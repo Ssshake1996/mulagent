@@ -1401,11 +1401,20 @@ async def react_loop(
         # Timeout — try LLM synthesis; deadline scales with main timeout
         _conclude_deadline = max(timeout // 20, 30)
         try:
-            return await asyncio.wait_for(
-                _force_conclude_llm(memory, user_input, llm), timeout=_conclude_deadline,
+            answer = await asyncio.wait_for(
+                _force_conclude_llm(memory, user_input, llm,
+                                    strategies_tried, is_timeout=True),
+                timeout=_conclude_deadline,
             )
         except Exception:
-            return _force_conclude_fallback(memory, user_input)
+            answer = _force_conclude_fallback(memory, user_input)
+        # Append timeout marker so the caller (and user) know this is partial
+        answer += (
+            "\n\n---\n"
+            "⏱ **任务未完成（超时）**：以上为已执行部分的结果。"
+            "如需继续，请重新发送未完成的部分。"
+        )
+        return answer
 
 
 async def _verify_answer(
@@ -1508,6 +1517,7 @@ def _trim_conversation(conversation: list, max_pairs: int = 4) -> list:
 async def _force_conclude_llm(
     memory: WorkingMemory, user_input: str, llm: Any,
     strategies_tried: list[dict] | None = None,
+    is_timeout: bool = False,
 ) -> str:
     """Use LLM to synthesize a final answer from collected facts."""
     from langchain_core.messages import HumanMessage, SystemMessage
@@ -1541,10 +1551,27 @@ async def _force_conclude_llm(
     # Build state summary
     state_text = ""
     if memory.state:
-        state_text = f"\n\n当前状态: {json.dumps(memory.state, ensure_ascii=False)}"
+        # Exclude internal keys (futures, bg_tasks) from state dump
+        _clean_state = {k: v for k, v in memory.state.items()
+                        if not k.startswith("_bg")}
+        if _clean_state:
+            state_text = f"\n\n当前状态: {json.dumps(_clean_state, ensure_ascii=False)}"
 
-    messages = [
-        SystemMessage(content=(
+    # Timeout-specific instructions: forbid promising future actions
+    if is_timeout:
+        system_instruction = (
+            "你是一个任务助手。用户提出了一个任务，但执行过程因超时被强制终止。\n"
+            "你即将被终止，无法执行任何后续操作。请根据已收集的信息给出总结报告。\n"
+            "严格要求：\n"
+            "- 用和用户相同的语言回答\n"
+            "- 只报告已经完成的部分，列出具体结果\n"
+            "- 明确列出未完成的具体项目（如：第X章未校验、第Y-Z步未执行）\n"
+            "- 绝对不要说'让我稍后继续'、'我会继续检查'等承诺——你无法兑现\n"
+            "- 绝对不要说'请稍等'、'正在进行中'——任务已经终止\n"
+            "- 不要编造信息"
+        )
+    else:
+        system_instruction = (
             "你是一个任务助手。用户提出了一个任务，执行过程已达到轮数上限。\n"
             "请根据已收集的信息和执行进度，给出完整的总结报告。\n"
             "要求：\n"
@@ -1553,7 +1580,10 @@ async def _force_conclude_llm(
             "- 如果有具体的执行结果（文件已创建、数据已处理等），列出来\n"
             "- 如果有未完成的步骤，给出下一步建议\n"
             "- 不要编造信息"
-        )),
+        )
+
+    messages = [
+        SystemMessage(content=system_instruction),
         HumanMessage(content=(
             f"用户任务: {user_input}{directives_text}{progress_text}{state_text}\n\n"
             f"已收集的信息:\n{facts_text}\n\n"
@@ -1589,7 +1619,7 @@ def _force_conclude_fallback(memory: WorkingMemory, user_input: str) -> str:
             best = best[:1500] + "\n..."
         parts.append(f"**{source}**:\n{best}")
 
-    parts.append("\n---\n*注意：任务在限定时间/轮次内未完全完成，以上为已收集到的部分结果。*")
+    parts.append("\n---\n*注意：任务在限定时间/轮次内未完全完成，以上为已收集到的部分结果。如需继续，请重新发送未完成的部分。*")
     return "\n\n".join(parts)
 
 

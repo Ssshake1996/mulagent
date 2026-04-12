@@ -483,6 +483,16 @@ async def _delegate(params: dict[str, Any], **deps: Any) -> str:
 
         return sub_result
 
+    # ── Auto-background: batch/long tasks auto-upgrade to background mode ──
+    # When a batch task's estimated workload far exceeds sub_timeout, running
+    # foreground will just timeout and lose results. Auto-switch to background
+    # so the main agent can check_background periodically.
+    if not background and _is_batch and sub_timeout >= _main_timeout * 0.5:
+        background = True
+        logger.info("Auto-upgrading delegate to background: batch task with "
+                     "sub_timeout=%ds >= 50%% of main_timeout=%ds",
+                     sub_timeout, _main_timeout)
+
     # ── Background mode: start async and return immediately ──
     if background:
         memory = deps.get("memory")
@@ -504,13 +514,23 @@ async def _delegate(params: dict[str, Any], **deps: Any) -> str:
                 "role": role,
                 "future": future,
                 "started_at": time.time(),
+                "timeout": sub_timeout,
             }
             memory.update_state("_bg_tasks", bg_tasks)
+
+        auto_hint = ""
+        if _is_batch:
+            auto_hint = (
+                f"\n⚠️ This is a batch task auto-upgraded to background mode "
+                f"(estimated timeout {sub_timeout}s). "
+                f"Check back in ~{sub_timeout // 60} minutes."
+            )
 
         return (
             f"Background task started: {bg_id}\n"
             f"Task: {task[:100]}\n"
             f"Use check_background(task_id='{bg_id}') to get the result when ready."
+            f"{auto_hint}"
         )
 
     # ── Foreground mode: wait for result ──
