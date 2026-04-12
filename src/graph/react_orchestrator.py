@@ -159,6 +159,18 @@ For non-trivial calculations, use code_run instead of mental math.
 - Do not expose secrets (API keys, passwords, tokens) in output or commits
 - Validate external input at system boundaries; use parameterized queries for SQL
 
+## Delegation Rules — NEVER delegate understanding
+When using `delegate` to hand off work to a sub-agent:
+- **Resolve all references first**: The sub-agent has ZERO access to your conversation history.
+  Replace ALL pronouns and vague references ("这些", "those", "上面的", "it") with concrete
+  values (file paths, chapter numbers, specific item lists) BEFORE writing the task.
+- **Self-contained task**: Write the `task` field as if briefing a new colleague who just
+  walked into the room. Include: what to do, which specific targets, why, and success criteria.
+- **Carry forward results**: If the task depends on previous tool results (e.g. a validation
+  report), extract the key data and include it in the `task` or `context` field.
+- **Bad**: delegate(task="对这些章节重新生成")  ← sub-agent 不知道"这些"是哪些
+- **Good**: delegate(task="重新生成第 6,17,29 章（校验失败）和第 5,7,11,14,19,24 章（警告）")
+
 ## Experience System
 For complex or recurring tasks, use knowledge_recall to check for relevant past experiences.
 """
