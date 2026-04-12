@@ -804,6 +804,13 @@ async def react_loop(
     # Parallel call tracking: consecutive rounds with single tool call
     _single_call_rounds = 0
 
+    # ── Stall detection: state-based rather than time-based ──
+    # A round is "productive" if it adds new facts, writes files, or makes progress.
+    # A round is "stalled" if it produces no new facts and repeats previous calls.
+    _stall_rounds = 0  # consecutive rounds with no progress
+    _STALL_THRESHOLD = 3  # force-conclude after N stalled rounds
+    _last_fact_count = 0  # fact count at start of round
+
     # Cache: bind_tools (rebind when deferred tool is loaded)
     llm_with_tools = llm.bind_tools(tool_schemas)
     from common.retry import retry_async
@@ -819,7 +826,10 @@ async def react_loop(
 
     async def _run_loop() -> str:
         nonlocal _single_call_rounds, _tools_dirty, llm_with_tools, _todo_used, _total_tool_calls
+        nonlocal _stall_rounds, _last_fact_count
         for round_num in range(max_rounds):
+            # Record fact count at start of round for stall detection
+            _last_fact_count = len(memory.facts)
             # Rebind tools if deferred tool was loaded last round
             if _tools_dirty:
                 tool_schemas_now = [t.to_openai_schema() for t in tool_defs.values()
@@ -1335,6 +1345,25 @@ async def react_loop(
                 except Exception:
                     memory.compact_facts(keep_recent=_keep_recent)
 
+            # ── Stall detection: state-based continuation control ──
+            _new_facts = len(memory.facts) - _last_fact_count
+            _round_had_success = any(
+                s["outcome"] == "ok" and s["round"] == round_num
+                for s in strategies_tried
+            )
+            if _new_facts > 0 or _round_had_success:
+                _stall_rounds = 0  # productive round
+            else:
+                _stall_rounds += 1
+                logger.info("Stall detection: round %d had no new facts "
+                            "and no success (stall_rounds=%d/%d)",
+                            round_num + 1, _stall_rounds, _STALL_THRESHOLD)
+            if _stall_rounds >= _STALL_THRESHOLD:
+                logger.warning("Stall threshold reached (%d rounds with no progress), "
+                               "force-concluding", _stall_rounds)
+                return await _force_conclude_llm(
+                    memory, user_input, llm, strategies_tried, is_timeout=False)
+
             # ── Self-check at ~50% of max_rounds ──
             if round_num == max_rounds // 2 and not is_sub_agent:
                 # Build strategy summary for self-reflection
@@ -1371,9 +1400,14 @@ async def react_loop(
             result_meta["disabled_tools"] = list(disabled_tools.keys())
             result_meta["_tasks"] = memory.state.get("_tasks", [])
 
-    # Run with overall timeout
+    # Run with safety ceiling timeout.
+    # Primary termination is state-based (stall detection + max_rounds),
+    # not time-based. The timeout here is a safety net to prevent infinite hangs.
+    # Safety ceiling = 3x configured timeout (generous, because progress-based
+    # control handles normal termination).
+    _safety_ceiling = timeout * 3
     try:
-        answer = await asyncio.wait_for(_run_loop(), timeout=timeout)
+        answer = await asyncio.wait_for(_run_loop(), timeout=_safety_ceiling)
         _populate_meta()
         # ── Completion metrics + cleanup checkpoint ──
         try:
@@ -1396,7 +1430,7 @@ async def react_loop(
             pass
         return answer
     except asyncio.TimeoutError:
-        logger.warning("ReAct loop timed out after %ds", timeout)
+        logger.warning("ReAct loop hit safety ceiling after %ds", _safety_ceiling)
         _populate_meta()
         # Timeout — try LLM synthesis; deadline scales with main timeout
         _conclude_deadline = max(timeout // 20, 30)
